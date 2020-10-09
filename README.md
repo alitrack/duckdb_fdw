@@ -25,6 +25,12 @@ make install
 </pre>
 
 ## Usage
+
+you need create a dumb table in DuckDB first,
+```
+CREATE TABLE sqlite_stat1(tbl text,idx text,stat text);
+```
+
 ### Load extension
 <pre>
 CREATE EXTENSION duckdb_fdw;
