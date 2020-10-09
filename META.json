@@ -1,0 +1,44 @@
+{
+   "name": "duckdb_fdw",
+   "abstract": "Foreign Data Wrapper for SQLite databases",
+   "description": "PostgreSQL extension which implements a Foreign Data Wrapper (FDW) for SQLite databases.",
+   "version": "1.2.0",
+   "maintainer": "mochizk",
+   "license": "postgresql",
+   "provides": {
+      "duckdb_fdw": {
+         "abstract": "Foreign Data Wrapper for SQLite databases",
+         "file": "duckdb_fdw.c",
+         "docfile": "README.md",
+         "version": "1.2.0"
+      }
+   },
+   "prereqs": {
+      "runtime": {
+         "requires": {
+            "PostgreSQL": "9.6.0"
+         }
+      }
+   },
+   "resources": {
+      "bugtracker": {
+         "web": "http://github.com/pgspider/duckdb_fdw/issues/"
+      },
+      "repository": {
+        "url":  "git://github.com/pgspider/duckdb_fdw.git",
+        "web":  "https://github.com/pgspider/duckdb_fdw/",
+        "type": "git"
+      }
+   },
+   "generated_by": "David E. Wheeler",
+   "meta-spec": {
+      "version": "1.0.0",
+      "url": "http://pgxn.org/meta/spec.txt"
+   },
+   "tags": [
+      "sqlite",
+      "fdw",
+      "foreign data wrapper",
+      "duckdb_fdw"
+   ]
+}
