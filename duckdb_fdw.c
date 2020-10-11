@@ -1095,8 +1095,8 @@ sqliteAddForeignUpdateTargets(Query *parsetree,
 		ListCell   *option;
 
 		/* look for the "key" option on this column */
-		options = GetForeignColumnOptions(relid, attrno);
-		
+		options = GetForeignColumnOptions(relid, attrno);	
+
 		foreach(option, options)
 		{
 			DefElem    *def = (DefElem *) lfirst(option);
@@ -1422,7 +1422,7 @@ bindJunkColumnValue(SqliteFdwExecState * fmstate,
 	int			i;
 	Datum		value;
 	Oid			typeoid;
-
+	elog(DEBUG1, "duckdb_fdw : %s", __func__);
 	/* Bind where condition using junk column */
 	for (i = 0; i < slot->tts_tupleDescriptor->natts; ++i)
 	{
@@ -1476,6 +1476,8 @@ sqliteExecForeignUpdate(EState *estate,
 
 	elog(DEBUG1, "duckdb_fdw : %s", __func__);
 
+	bindJunkColumnValue(fmstate, slot, planSlot, foreignTableId, bindnum);
+	bindnum++;
 	/* Bind the values */
 	foreach(lc, fmstate->retrieved_attrs)
 	{
@@ -1488,13 +1490,13 @@ sqliteExecForeignUpdate(EState *estate,
 		type = TupleDescAttr(slot->tts_tupleDescriptor, attnum - 1)->atttypid;
 
 		value = slot_getattr(slot, attnum, &is_null);
-
+		
 		sqlite_bind_sql_var(type, bindnum, value, fmstate->stmt, &is_null);
 		bindnum++;
 		i++;
 	}
-
-	bindJunkColumnValue(fmstate, slot, planSlot, foreignTableId, bindnum);
+	
+	// bindJunkColumnValue(fmstate, slot, planSlot, foreignTableId, bindnum);
 
 	/* Execute the query */
 	rc = sqlite3_step(fmstate->stmt);
@@ -1710,7 +1712,7 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 				not_null = (sqlite3_column_int(pragma_stmt, 3) == 1);
 				default_val = (char *) sqlite3_column_text(pragma_stmt, 4);
 				primary_key = sqlite3_column_int(pragma_stmt, 5);
-
+				
 				if (first_item)
 					first_item = false;
 				else
@@ -2467,6 +2469,7 @@ add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 	add_path(final_rel, (Path *) final_path);
 }
 
+//todo:
 static int
 get_estimate(Oid foreigntableid)
 {
