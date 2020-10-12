@@ -2473,42 +2473,42 @@ add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 static int
 get_estimate(Oid foreigntableid)
 {
-	sqlite3    *db;
-	sqlite3_stmt *stmt;
-	char	   *query;
-	size_t		len;
-	sqlite_opt *opt;
-	int			rows = DEFAULT_ROW_ESTIMATE;
-	ForeignTable *table;
-	int			rc;
+	return DEFAULT_ROW_ESTIMATE;
+	// sqlite3    *db;
+	// sqlite3_stmt *stmt;
+	// char	   *query;
+	// size_t		len;
+	// sqlite_opt *opt;
+	// int			rows = DEFAULT_ROW_ESTIMATE;
+	// ForeignTable *table;
+	// int			rc;
 
-	opt = sqlite_get_options(foreigntableid);
-	table = GetForeignTable(foreigntableid);
+	// opt = sqlite_get_options(foreigntableid);
+	// table = GetForeignTable(foreigntableid);
 
-	db = sqlite_get_connection(GetForeignServer(table->serverid));
+	// db = sqlite_get_connection(GetForeignServer(table->serverid));
 
-	len = strlen(opt->svr_table) + 60;
-	query = (char *) palloc(len);
-	snprintf(query, len, "SELECT stat FROM sqlite_stat1 WHERE tbl='%s' AND idx IS NULL", opt->svr_table);
-	rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-	{
-		const char *err = sqlite3_errmsg(db);
+	// len = strlen(opt->svr_table) + 60;
+	// query = (char *) palloc(len);
+	// snprintf(query, len, "SELECT stat FROM sqlite_stat1 WHERE tbl='%s' AND idx IS NULL", opt->svr_table);
+	// rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
+	// if (rc != SQLITE_OK)
+	// {
+	// 	const char *err = sqlite3_errmsg(db);
 
-		if (strcmp(err, "no such table: sqlite_stat1") != 0)
-			elog(ERROR, "prepare failed with rc=%d msg=%s", rc, err);
-		return DEFAULT_ROW_ESTIMATE;
-	}
+	// 	if (strcmp(err, "no such table: sqlite_stat1") != 0)
+	// 		elog(ERROR, "prepare failed with rc=%d msg=%s", rc, err);
+	// 	return DEFAULT_ROW_ESTIMATE;
+	// }
 
-	rc = sqlite3_step(stmt);
-	if (rc == SQLITE_ROW)
-		rows = sqlite3_column_int(stmt, 0);
-	else if (rc != SQLITE_DONE)
-		sqlitefdw_report_error(ERROR, stmt, db, query, rc);
+	// rc = sqlite3_step(stmt);
+	// if (rc == SQLITE_ROW)
+	// 	rows = sqlite3_column_int(stmt, 0);
+	// else if (rc != SQLITE_DONE)
+	// 	sqlitefdw_report_error(ERROR, stmt, db, query, rc);
 
-	sqlite3_finalize(stmt);
-
-	return rows;
+	// sqlite3_finalize(stmt);
+	// return rows;
 }
 
 

@@ -28,12 +28,6 @@ make install
 
 ## Usage
 
-you need create a dumb table in DuckDB first,
-
-```sql
-CREATE TABLE sqlite_stat1(tbl text,idx text,stat text);
-```
-
 ### Load extension
 
 ```sql
