@@ -115,7 +115,7 @@ FUNCTION duckdb_execute(server name, stmt text) RETURNS void
 
 This function can be used to execute arbitrary SQL statements on the remote DuckDB server. That will only work with statements that do not return results (typically DDL statements).
 
-Be careful when using this function, since it might disturb the transaction management of duckdb_fdw. Remember that running a DDL statement in DuckDB will issue an implicit COMMIT. You are best advised to use this function outside of multi-statement transactions. 
+Be careful when using this function, since it might disturb the transaction management of duckdb_fdw. Remember that running a DDL statement in DuckDB will issue an implicit COMMIT. You are best advised to use this function outside of multi-statement transactions.
 
 It is very useful to use command that duckdb_fdw does not support, for example,
 
@@ -139,8 +139,11 @@ create foreign TABLE duckdb.iris_parquet(
 ```sql
 SELECT duckdb_execute('duckdb_server'
 ,'CREATE TABLE test (a INTEGER, b INTEGER, c VARCHAR(10));
-COPY test FROM ''/tmp/test.csv'';
 ');
+SELECT duckdb_execute('duckdb_server'
+,'COPY test FROM ''/tmp/test.csv'';');
+
+
 ```
 
 ## Contributing
