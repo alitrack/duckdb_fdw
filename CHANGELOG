@@ -1,0 +1,3 @@
+  Enhancements:
+  - Add a function "duckdb_execute" to execute arbitrary SQL statements on
+    DuckDB.  The statements must not return a result (e.g. DDL statements).

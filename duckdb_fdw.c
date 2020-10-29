@@ -94,7 +94,12 @@ extern Datum duckdb_fdw_handler(PG_FUNCTION_ARGS);
 extern Datum duckdb_fdw_validator(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(duckdb_fdw_handler);
+PG_FUNCTION_INFO_V1(duckdb_fdw_version);
 
+
+PG_FUNCTION_INFO_V1(duckdb_execute);
+
+#define CODE_VERSION   10000
 
 static void sqliteGetForeignRelSize(PlannerInfo *root,
 									RelOptInfo *baserel,
@@ -2868,4 +2873,74 @@ sqlite_find_em_expr_for_input_target(PlannerInfo *root,
 
 	elog(ERROR, "could not find pathkey item to sort");
 	return NULL;				/* keep compiler quiet */
+}
+
+
+
+
+Datum
+duckdb_fdw_version(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(CODE_VERSION);
+}
+
+/*
+ * duckdb_execute
+ * 		Execute a statement that returns no result values  on a foreign server.
+ */
+Datum
+duckdb_execute(PG_FUNCTION_ARGS)
+{
+	sqlite3    *volatile db = NULL;
+	sqlite3_stmt *volatile sql_stmt = NULL;
+	ForeignServer *server;
+	Name srvname = PG_GETARG_NAME(0);
+	
+	char *query = text_to_cstring(PG_GETARG_TEXT_PP(1));
+
+	elog(DEBUG1, "duckdb_fdw : %s", __func__);
+
+	elog(DEBUG1, "duckdb_fdw : %s %s", srvname->data, query);
+	server = GetForeignServerByName(srvname->data, false);
+	db = sqlite_get_connection(server);
+
+	
+	
+	PG_TRY();
+	{
+		sqlite_prepare_wrapper(db, query, (sqlite3_stmt * *) & sql_stmt, NULL);
+		/* Scan all rows for this table */
+		for (;;)
+		{
+
+			char	   *table;
+			char	   *query;
+			bool		first_item = true;
+			int			rc = sqlite3_step(sql_stmt);
+
+			if (rc == SQLITE_DONE)
+				break;
+			else if (rc != SQLITE_ROW)
+			{
+				/*
+				 * Not pass sql_stmt to sqlitefdw_report_error because it is
+				 * finalized in PG_CATCH
+				 */
+				sqlitefdw_report_error(ERROR, NULL, db, sqlite3_sql(sql_stmt), rc);
+			}
+		}
+	}
+	PG_CATCH();
+	{
+		if (sql_stmt)
+			sqlite3_finalize(sql_stmt);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (sql_stmt)
+		sqlite3_finalize(sql_stmt);
+	const char *message = sqlite3_errmsg(db);
+	PG_RETURN_VOID();
+
 }
