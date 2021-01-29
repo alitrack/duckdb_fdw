@@ -132,7 +132,13 @@ create foreign TABLE duckdb.iris_parquet(
 "Petal.Width" float,
 "Species" text)
       SERVER duckdb_server OPTIONS (table 'iris_parquet');
+
+-- or an easy way
+
+IMPORT FOREIGN SCHEMA public limit to (iris_parquet)  FROM SERVER 
+duckdb_server INTO duckdb;
 ```
+
 
 - run Copy command on Foreign table
 

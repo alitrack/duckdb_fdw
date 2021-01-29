@@ -75,6 +75,7 @@ sqlite3 *
 sqlite_get_connection(ForeignServer *server)
 {
 	const char *dbpath = NULL;
+	int flags=0;            /* Flags */
 	bool		found;
 	ConnCacheEntry *entry;
 	ConnCacheKey key;
@@ -115,6 +116,11 @@ sqlite_get_connection(ForeignServer *server)
 
 		if (strcmp(def->defname, "database") == 0)
 			dbpath = defGetString(def);
+		if (strcmp(def->defname, "read_only") == 0){
+			const char *_flags=defGetString(def);
+			if (_flags!='0')
+				flags = 1;
+			}
 	}
 
 	Assert(dbpath);
@@ -154,7 +160,8 @@ sqlite_get_connection(ForeignServer *server)
 			GetSysCacheHashValue1(FOREIGNSERVEROID,
 								  ObjectIdGetDatum(server->serverid));
 
-		rc = sqlite3_open(dbpath, &entry->conn);
+		//rc = sqlite3_open(dbpath, &entry->conn);
+		rc = sqlite3_open_v2(dbpath, &entry->conn,flags, NULL);
 		if (rc != SQLITE_OK)
 			ereport(ERROR,
 					(errcode(ERRCODE_FDW_UNABLE_TO_ESTABLISH_CONNECTION),
