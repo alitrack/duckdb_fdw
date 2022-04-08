@@ -2,7 +2,7 @@
 
 This PostgreSQL extension is a Foreign Data Wrapper for [DuckDB][1].
 
-The current version can work with PostgreSQL 9.6, 10, 11, 12 and 13.
+The current version can work with PostgreSQL 9.6, 10, 11, 12, 13 and 14.
 
 ## Installation
 
@@ -16,12 +16,13 @@ cd duckdb
 make 
 ```
 
-what we need is 
+what we need is,
 
-build/release/tools/sqlite3_api_wrapper/libsqlite3_api_wrapper.dylib（for Linux is libsqlite3_api_wrapper.so，and Windows is libsqlite3_api_wrapper.dll）
-tools/sqlite3_api_wrapper/include/sqlite3.h
+- build/release/tools/sqlite3_api_wrapper/libsqlite3_api_wrapper.so
+- tools/sqlite3_api_wrapper/include/sqlite3.h
+- build/release/src/libduckdb.so
 
-by default, ```make install``` does not install these two files.
+by default, ```make install``` does not install these three files.
 
 ### 2. Build and install duckdb_fdw
 
@@ -92,20 +93,24 @@ SELECT * FROM t1;
 
 ## Features
 
-- Update & Delete support
-- Support execute sql on foreign Database directly
-- Support CSV and Parquet
-- Columnar-vectorized query execution engine
-- DuckDB is designed to support analytical query workloads, also known as Online analytical processing (OLAP)
+- Support update to foreign table  
 - WHERE clauses are pushdowned  
 - Aggregate function are pushdowned
-- Order By is pushdowned.
+- Order By is pushdowned
+- Joins (left/right/inner) are pushdowned
 - Limit and Offset are pushdowned (*when all tables queried are fdw)
 - Transactions  
+- Support TRUNCATE by deparsing into DELETE statement without WHERE clause  
+- Allow control over whether foreign servers keep connections open after transaction completion. This is controlled by "keep_connections" and defaults to on  
+- Support list cached connections to foreign servers by using function duckdb_fdw_get_connections()  
+- Support discard cached connections to foreign servers by using function duckdb_fdw_disconnect(), duckdb_fdw_disconnect_all().  
+- Support Bulk Insert by using batch_size option  
+- Support Insert/Update with generated column  
 
 ## Limitations
 
 - Insert into a partitioned table which has foreign partitions is not supported
+- TRUNCATE in duckdb_fdw always delete data of both parent and child tables (no matter user inputs "TRUNCATE table CASCADE" or "TRUNCATE table RESTRICT") if there are foreign-keys references with "ON DELETE CASCADE" clause.
 
 ## Special Function
 
@@ -139,7 +144,6 @@ IMPORT FOREIGN SCHEMA public limit to (iris_parquet)  FROM SERVER
 duckdb_server INTO duckdb;
 ```
 
-
 - run Copy command on Foreign table
 
 ```sql
@@ -148,7 +152,6 @@ SELECT duckdb_execute('duckdb_server'
 ');
 SELECT duckdb_execute('duckdb_server'
 ,'COPY test FROM ''/tmp/test.csv'';');
-
 
 ```
 

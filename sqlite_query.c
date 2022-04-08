@@ -62,21 +62,21 @@
 #include "catalog/pg_type.h"
 
 static int32
-sqlite_from_pgtyp(Oid pgtyp);
+			sqlite_from_pgtyp(Oid pgtyp);
 
 /*
  * convert_sqlite_to_pg: Convert Sqlite data into PostgreSQL's compatible data types
  */
 Datum
-sqlite_convert_to_pg(Oid pgtyp, int pgtypmod, sqlite3_stmt * stmt, int attnum)
+sqlite_convert_to_pg(Oid pgtyp, int pgtypmod, sqlite3_stmt * stmt, int attnum, AttInMetadata *attinmeta)
 {
 	Datum		value_datum = 0;
 	Datum		valueDatum = 0;
 	regproc		typeinput;
 	HeapTuple	tuple;
-	int		typemod;
-	int		col_type;
-	int		sqlite_type;
+	int			typemod;
+	int			col_type;
+	int			sqlite_type;
 
 	/* get the type's output function */
 	tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(pgtyp));
@@ -91,7 +91,7 @@ sqlite_convert_to_pg(Oid pgtyp, int pgtypmod, sqlite3_stmt * stmt, int attnum)
 	col_type = sqlite3_column_type(stmt, attnum);
 
 	if (sqlite_type != col_type && col_type == SQLITE3_TEXT)
-		elog(ERROR,"invalid input syntax for type =%d, column type =%d", sqlite_type, col_type);
+		elog(ERROR, "invalid input syntax for type =%d, column type =%d", sqlite_type, col_type);
 
 	switch (pgtyp)
 	{
@@ -153,33 +153,56 @@ sqlite_convert_to_pg(Oid pgtyp, int pgtypmod, sqlite3_stmt * stmt, int attnum)
 				return Float8GetDatum((float8) value);
 				break;
 			}
+		case BPCHAROID:
+		case VARCHAROID:
+		case TEXTOID:
+		case JSONOID:
+		case NAMEOID:
+		case TIMEOID:
 		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+		case DATEOID:
 			{
-				/* 
-				 * We add this conversion to allow add INTEGER/FLOAT SQLite Columns be added as TimeStamp in PostgreSQL.
-				 * We just calling PostgreSQL function "to_timestamp(double value)"" to convert each registry returned
-				 * from INT/FLOAT value to TimeStamp string, so PosgtreSQL can handle/show without problems.
-				 * If it's a TEXT SQLite column...we let them to the "regular" process because its already implemented and
+				/*
+				 * We add this conversion to allow add INTEGER/FLOAT SQLite
+				 * Columns be added as TimeStamp in PostgreSQL. We just
+				 * calling PostgreSQL function "to_timestamp(double value)""
+				 * to convert each registry returned from INT/FLOAT value to
+				 * TimeStamp string, so PosgtreSQL can handle/show without
+				 * problems. If it's a TEXT SQLite column...we let them to the
+				 * "regular" process because its already implemented and
 				 * working properly.
 				 */
-				int sqlitetype = sqlite3_column_type(stmt, attnum);
+				int			sqlitetype = sqlite3_column_type(stmt, attnum);
+
 				if (sqlitetype == SQLITE_INTEGER || sqlitetype == SQLITE_FLOAT)
 				{
-						double value = sqlite3_column_double(stmt, attnum);
-						return DirectFunctionCall1(float8_timestamptz, Float8GetDatum((float8) value));
+					double		value = sqlite3_column_double(stmt, attnum);
+
+					return DirectFunctionCall1(float8_timestamptz, Float8GetDatum((float8) value));
 				}
 				else
 				{
-						valueDatum = CStringGetDatum((char *) sqlite3_column_text(stmt, attnum));
+					valueDatum = CStringGetDatum((char *) sqlite3_column_text(stmt, attnum));
+					return OidFunctionCall3(typeinput, valueDatum, ObjectIdGetDatum(InvalidOid), Int32GetDatum(typemod));
 				}
 				break;
+			}
+		case NUMERICOID:
+			{
+				double		value = sqlite3_column_double(stmt, attnum);
+
+				valueDatum = CStringGetDatum((char *) DirectFunctionCall1(float8out, Float8GetDatum((float8) value)));
+				return OidFunctionCall3(typeinput, valueDatum, ObjectIdGetDatum(InvalidOid), Int32GetDatum(typemod));
 			}
 		default:
 			valueDatum = CStringGetDatum((char *) sqlite3_column_text(stmt, attnum));
 	}
 	/* convert string value to appropriate type value */
-	value_datum = OidFunctionCall3(typeinput, valueDatum, ObjectIdGetDatum(InvalidOid), Int32GetDatum(typemod));
-
+	value_datum = InputFunctionCall(&attinmeta->attinfuncs[attnum],
+									(char *) valueDatum,
+									attinmeta->attioparams[attnum],
+									attinmeta->atttypmods[attnum]);
 	return value_datum;
 }
 
@@ -267,6 +290,7 @@ sqlite_bind_sql_var(Oid type, int attnum, Datum value, sqlite3_stmt * stmt, bool
 		case TIMEOID:
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
+		case DATEOID:
 			{
 				/* Bind as text because SQLite does not have these types */
 				char	   *outputString = NULL;
@@ -309,12 +333,10 @@ sqlite_bind_sql_var(Oid type, int attnum, Datum value, sqlite3_stmt * stmt, bool
 	if (ret != SQLITE_OK)
 		ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
 						errmsg("Can't convert constant value to Sqlite: %s",
-							stmt
-							),
+							   sqlite3_errmsg(sqlite3_db_handle(stmt))),
 						errhint("Constant value data type: %u", type)));
 
 }
-							/*sqlite3_errmsg(sqlite3_db_handle(stmt))*/
 
 /*
  * Give SQLite data type from PG type
@@ -322,7 +344,7 @@ sqlite_bind_sql_var(Oid type, int attnum, Datum value, sqlite3_stmt * stmt, bool
 static int32
 sqlite_from_pgtyp(Oid type)
 {
-	switch(type)
+	switch (type)
 	{
 		case INT2OID:
 		case INT4OID:
@@ -333,25 +355,9 @@ sqlite_from_pgtyp(Oid type)
 		case FLOAT8OID:
 		case NUMERICOID:
 			return SQLITE_FLOAT;
-		case BPCHAROID:
-		case VARCHAROID:
-		case TEXTOID:
-		case JSONOID:
-		case NAMEOID:
-		case DATEOID:
-		case TIMEOID:
-		case TIMESTAMPOID:
-		case TIMESTAMPTZOID:
-			return SQLITE3_TEXT;
 		case BYTEAOID:
 			return SQLITE_BLOB;
 		default:
-		{
-			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
-							errmsg("Cannot detect sqlite data type"),
-							errhint("Constant value data type: %u", type)));
-			break;
-		}
+			return SQLITE3_TEXT;
 	}
 }
-

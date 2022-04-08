@@ -2,7 +2,7 @@
  *
  * DuckDB Foreign Data Wrapper for PostgreSQL
  *
- * Portions Copyright (c) 2018, TOSHIBA CORPORATION
+ * Portions Copyright (c) 2021, TOSHIBA CORPORATION
  *
  * IDENTIFICATION
  *        option.c
@@ -33,6 +33,7 @@
 #include "storage/fd.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/lsyscache.h"
 #include "optimizer/cost.h"
@@ -60,12 +61,18 @@ static struct SqliteFdwOption valid_options[] =
 	{"key", AttributeRelationId},
 	{"column_name", AttributeRelationId},
 	{"column_type", AttributeRelationId},
-	{"read_only",	ForeignServerRelationId},
+	/* truncatable is available on both server and table */
+	{"truncatable", ForeignServerRelationId},
+	{"truncatable", ForeignTableRelationId},
+	{"keep_connections", ForeignServerRelationId},
+	/* batch_size is available on both server and table */
+	{"batch_size", ForeignServerRelationId},
+	{"batch_size", ForeignTableRelationId},
 	/* Sentinel */
 	{NULL, InvalidOid}
 };
 
-extern Datum duckdb_fdw_validator(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum duckdb_fdw_validator(PG_FUNCTION_ARGS);
 
 PG_FUNCTION_INFO_V1(duckdb_fdw_validator);
 bool
@@ -114,6 +121,34 @@ duckdb_fdw_validator(PG_FUNCTION_ARGS)
 					 errmsg("invalid option \"%s\"", def->defname),
 					 errhint("Valid options in this context are: %s", buf.len ? buf.data : "<none>")
 					 ));
+		}
+
+		/* Validate option value */
+		if (strcmp(def->defname, "truncatable") == 0 ||
+			strcmp(def->defname, "keep_connections") == 0)
+		{
+			defGetBoolean(def);
+		}
+		else if (strcmp(def->defname, "batch_size") == 0)
+		{
+			char	   *value;
+			int			int_val;
+			bool		is_parsed;
+
+			value = defGetString(def);
+			is_parsed = parse_int(value, &int_val, 0, NULL);
+
+			if (!is_parsed)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("invalid value for integer option \"%s\": %s",
+								def->defname, value)));
+
+			if (int_val <= 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("\"%s\" must be an integer value greater than zero",
+								def->defname)));
 		}
 	}
 	PG_RETURN_VOID();

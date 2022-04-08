@@ -1,0 +1,5 @@
+*.c linguist-detectable=true
+*.h linguist-detectable=true
+expected/* linguist-detectable=false
+sql/* linguist-detectable=false
+*.md linguist-documentation

@@ -36,6 +36,9 @@
 *.x86_64
 *.hex
 
+# Log files
+log/
+
 # Debug files
 *.dSYM/
 *.su
@@ -51,7 +54,8 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-#Other files
-update.sql
-check
-.vscode
+# Visual Studio related
+.vs/
+x64/
+Debug/
+Release/
