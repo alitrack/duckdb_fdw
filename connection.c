@@ -210,7 +210,7 @@ sqlite_make_new_connection(ConnCacheEntry *entry, ForeignServer *server)
 		// }
 	}
 
-	rc = sqlite3_open(dbpath, &entry->conn);
+	rc = sqlite3_open_v2(dbpath, &entry->conn, DUCKDB_UNSIGNED_EXTENSIONS, NULL);
 	// rc = sqlite3_open_v2(dbpath, &entry->conn,flags, NULL);
 	if (rc != SQLITE_OK)
 		ereport(ERROR,

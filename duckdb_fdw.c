@@ -75,8 +75,8 @@ PG_MODULE_MAGIC;
  */
 #define DEFAULT_ROW_ESTIMATE 1000000
 #define DEFAULTE_NUM_ROWS    1000
-#define IS_KEY_COLUMN(A)	((strcmp(A->defname, "key") == 0) && \
-							 (strcmp(((Value *)(A->arg))->val.str, "true") == 0))
+#define IS_KEY_COLUMN(A)		((strcmp(A->defname, "key") == 0) && \
+								 (strcmp(strVal(A->arg), "true") == 0))
 /* Default CPU cost to start up a foreign query. */
 #define DEFAULT_FDW_STARTUP_COST	100.0
 

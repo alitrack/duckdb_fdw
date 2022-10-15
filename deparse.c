@@ -3116,7 +3116,11 @@ sqlite_print_remote_placeholder(Oid paramtype, int32 paramtypmod,
 static bool
 sqlite_is_builtin(Oid oid)
 {
+#if PG_VERSION_NUM >= 120000
+	return (oid < FirstGenbkiObjectId);
+#else 
 	return (oid < FirstBootstrapObjectId);
+#endif
 }
 
 /*
