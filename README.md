@@ -2,7 +2,7 @@
 
 This PostgreSQL extension is a Foreign Data Wrapper for [DuckDB][1].
 
-The current version can work with PostgreSQL 9.6, 10, 11, 12, 13 and 14.
+The current version can work with PostgreSQL 9.6, 10, 11, 12, 13, 14 and 15.
 
 ## Installation
 
