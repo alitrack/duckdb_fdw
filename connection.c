@@ -181,7 +181,7 @@ static void
 sqlite_make_new_connection(ConnCacheEntry *entry, ForeignServer *server)
 {
 	const char *dbpath = NULL;
-	// int flags=0;            /* Flags */
+	int flags=DUCKDB_UNSIGNED_EXTENSIONS;            /* Flags */
 	int			rc;
 	ListCell   *lc;
 
@@ -203,15 +203,14 @@ sqlite_make_new_connection(ConnCacheEntry *entry, ForeignServer *server)
 			dbpath = defGetString(def);
 		else if (strcmp(def->defname, "keep_connections") == 0)
 			entry->keep_connections = defGetBoolean(def);
-		// else if (strcmp(def->defname, "read_only") == 0){
-		// 	const char *_flags=defGetString(def);
-		// 	if (_flags!='0')
-		// 		flags = 1;
-		// }
+		else if (strcmp(def->defname, "read_only") == 0){
+			const char *_flags=defGetString(def);
+			if (_flags!='0')
+				flags |= SQLITE_OPEN_READONLY;
+		}
 	}
 
-	rc = sqlite3_open_v2(dbpath, &entry->conn, DUCKDB_UNSIGNED_EXTENSIONS, NULL);
-	// rc = sqlite3_open_v2(dbpath, &entry->conn,flags, NULL);
+	rc = sqlite3_open_v2(dbpath, &entry->conn,flags, NULL);
 	if (rc != SQLITE_OK)
 		ereport(ERROR,
 				(errcode(ERRCODE_FDW_UNABLE_TO_ESTABLISH_CONNECTION),
