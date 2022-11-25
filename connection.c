@@ -205,7 +205,7 @@ sqlite_make_new_connection(ConnCacheEntry *entry, ForeignServer *server)
 			entry->keep_connections = defGetBoolean(def);
 		else if (strcmp(def->defname, "read_only") == 0){
 			const char *_flags=defGetString(def);
-			if (_flags!='0')
+			if (*_flags!='0')
 				flags |= SQLITE_OPEN_READONLY;
 		}
 	}
