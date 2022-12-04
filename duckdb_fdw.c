@@ -2081,11 +2081,11 @@ sqliteExecForeignBatchInsert(EState *estate,
 static int
 sqliteGetForeignModifyBatchSize(ResultRelInfo *resultRelInfo)
 {
-	int			batch_size;
-	int			limitVal;
-#if SQLITE_VERSION_NUMBER < 3008008
-	int			limitRow;
-#endif
+	int			batch_size =1;
+	// int			limitVal;
+// #if SQLITE_VERSION_NUMBER < 3008008
+// 	int			limitRow;
+// #endif
 	SqliteFdwExecState *fmstate = resultRelInfo->ri_FdwState ?
 	(SqliteFdwExecState *) resultRelInfo->ri_FdwState :
 	NULL;
@@ -2101,10 +2101,10 @@ sqliteGetForeignModifyBatchSize(ResultRelInfo *resultRelInfo)
 	if (fmstate)
 	{
 		batch_size = fmstate->batch_size;
-		limitVal = (sqlite3_limit(fmstate->conn, SQLITE_LIMIT_VARIABLE_NUMBER, -1) / fmstate->p_nums);
-#if SQLITE_VERSION_NUMBER < 3008008
-		limitRow = (sqlite3_limit(fmstate->conn, SQLITE_LIMIT_COMPOUND_SELECT, -1));
-#endif
+// 		limitVal = (sqlite3_limit(fmstate->conn, SQLITE_LIMIT_VARIABLE_NUMBER, -1) / fmstate->p_nums);
+// #if SQLITE_VERSION_NUMBER < 3008008
+// 		limitRow = (sqlite3_limit(fmstate->conn, SQLITE_LIMIT_COMPOUND_SELECT, -1));
+// #endif
 	}
 	else
 		batch_size = sqlite_get_batch_size_option(resultRelInfo->ri_RelationDesc);
@@ -2113,18 +2113,18 @@ sqliteGetForeignModifyBatchSize(ResultRelInfo *resultRelInfo)
 	 * The batch size is used specified for server/table. Make sure we don't
 	 * exceed this limit by using the maximum batch_size possible.
 	 */
-	if (fmstate && fmstate->p_nums > 0)
+	// if (fmstate && fmstate->p_nums > 0)
 
 		/*
 		 * If version of SQLite is less than 3.8.8, Bulk insert into SQLite
 		 * database has limit of 500 rows. So need use
 		 * SQLITE_MAX_COMPOUND_SELECT to check maximum batch_size.
 		 */
-#if SQLITE_VERSION_NUMBER < 3008008
-		batch_size = Min(batch_size, Min(limitVal, limitRow));
-#else
-		batch_size = Min(batch_size, limitVal);
-#endif
+// #if SQLITE_VERSION_NUMBER < 3008008
+// 		batch_size = Min(batch_size, Min(limitVal, limitRow));
+// #else
+// 		batch_size = Min(batch_size, limitVal);
+// #endif
 
 	/* Otherwise use the batch size specified for server/table. */
 	return batch_size;
