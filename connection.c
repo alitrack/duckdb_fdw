@@ -181,7 +181,7 @@ static void
 sqlite_make_new_connection(ConnCacheEntry *entry, ForeignServer *server)
 {
 	const char *dbpath = NULL;
-	int flags=DUCKDB_UNSIGNED_EXTENSIONS;            /* Flags */
+	int flags=0;            /* Flags */
 	int			rc;
 	ListCell   *lc;
 
@@ -207,6 +207,11 @@ sqlite_make_new_connection(ConnCacheEntry *entry, ForeignServer *server)
 			const char *_flags=defGetString(def);
 			if (*_flags!='0')
 				flags |= SQLITE_OPEN_READONLY;
+		}
+		else if (strcmp(def->defname, "unsigned") == 0){
+			const char *_flags=defGetString(def);
+			if (*_flags!='0')
+				flags |= DUCKDB_UNSIGNED_EXTENSIONS;
 		}
 	}
 
