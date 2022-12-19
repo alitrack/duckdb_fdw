@@ -59,6 +59,7 @@ static struct SqliteFdwOption valid_options[] =
 	{"table", ForeignTableRelationId},
 	{"database", ForeignServerRelationId},
 	{"read_only", ForeignServerRelationId},
+	{"unsigned", ForeignServerRelationId},
 	{"key", AttributeRelationId},
 	{"column_name", AttributeRelationId},
 	{"column_type", AttributeRelationId},

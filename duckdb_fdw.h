@@ -12,7 +12,7 @@
 
 #ifndef duckdb_fdw_H
 #define duckdb_fdw_H
-#include "duckdb_shell_wrapper.h"
+// #include "duckdb_shell_wrapper.h"
 #include "sqlite3.h"
 
 #if (PG_VERSION_NUM >= 120000)

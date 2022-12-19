@@ -1,30 +1,32 @@
 # DuckDB Foreign Data Wrapper for PostgreSQL
 
-This PostgreSQL extension is a Foreign Data Wrapper for [DuckDB][1].
+This PostgreSQL extension is a Foreign Data Wrapper for [DuckDB](https://www.DuckDB.org/index.html).
 
 The current version can work with PostgreSQL 9.6, 10, 11, 12, 13, 14 and 15.
 
 ## Installation
 
-### 1. Install DuckDB library
+### 0. install Postgres Server and postgres-server-dev
 
-You can  [download DuckDB source code][2] and build DuckDB.
+### 1. Download source
 
-```bash
-git clone https://github.com/cwida/duckdb
-cd duckdb
-make 
+```BASH
+git clone https://github.com/alitrack/duckdb_fdw
+cd duckdb_fdw
 ```
 
-what we need is,
+### 2. Download DuckDB library
 
-- build/release/tools/sqlite3_api_wrapper/libsqlite3_api_wrapper.so
-- tools/sqlite3_api_wrapper/include/sqlite3.h
-- build/release/src/libduckdb.so
+for example, we want to compile under Linux AMD64 with DuckDB v0.6.1
+just download [libduckdb-linux-amd64.zip](https://github.com/duckdb/duckdb/releases/download/v0.6.1/libduckdb-linux-amd64.zip)
 
-by default, ```make install``` does not install these three files.
+```bash
+wget -c https://github.com/duckdb/duckdb/releases/download/v0.6.1/libduckdb-linux-amd64.zip
+!unzip -d . libduckdb-linux-amd64.zip
+cp libduckdb.so $(pg_config --libdir) 
+```
 
-### 2. Build and install duckdb_fdw
+### 3. Build and install duckdb_fdw
 
 Add a directory of pg_config to PATH and build and install duckdb_fdw.
 
@@ -166,6 +168,3 @@ https://github.com/pgspider/sqlite_fdw
 ## License
 
 MIT
-
-[1]: https://www.DuckDB.org/index.html
-[2]: https://duckdb.org/docs/installation/

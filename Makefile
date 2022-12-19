@@ -10,14 +10,14 @@
 ##########################################################################
 
 MODULE_big = duckdb_fdw
-OBJS = connection.o option.o deparse.o sqlite_query.o duckdb_fdw.o
+OBJS = connection.o option.o deparse.o sqlite_query.o duckdb_fdw.o sqlite3_api_wrapper.o
 
 EXTENSION = duckdb_fdw
 DATA = duckdb_fdw--1.0.sql duckdb_fdw--1.0--1.1.sql
 
 REGRESS = extra/duckdb_fdw_post extra/float4 extra/float8 extra/int4 extra/int8 extra/numeric extra/join extra/limit extra/aggregates extra/prepare extra/select_having extra/select extra/insert extra/update extra/timestamp duckdb_fdw type aggregate selectfunc 
 
-SQLITE_LIB = sqlite3_api_wrapper
+SQLITE_LIB = duckdb
 
 UNAME = uname
 OS := $(shell $(UNAME))
@@ -27,7 +27,7 @@ else
 DLSUFFIX = .so
 endif
 
-SHLIB_LINK := -lsqlite3_api_wrapper
+SHLIB_LINK := -lduckdb -lstdc++ -lgcc -lm 
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
