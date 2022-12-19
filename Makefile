@@ -19,15 +19,26 @@ REGRESS = extra/duckdb_fdw_post extra/float4 extra/float8 extra/int4 extra/int8 
 
 SQLITE_LIB = duckdb
 
-UNAME = uname
-OS := $(shell $(UNAME))
-ifeq ($(OS), Darwin)
-DLSUFFIX = .dylib
+ifeq '$(findstring ;,$(PATH))' ';'
+    detected_OS := Windows
 else
-DLSUFFIX = .so
+    detected_OS := $(shell uname 2>/dev/null || echo Unknown)
+    detected_OS := $(patsubst CYGWIN%,Cygwin,$(detected_OS))
+    detected_OS := $(patsubst MSYS%,MSYS,$(detected_OS))
+    detected_OS := $(patsubst MINGW%,MSYS,$(detected_OS))
+endif
+ifeq ($(detected_OS),Windows)
+    # DLSUFFIX = .dll
+endif
+ifeq ($(detected_OS),Darwin)        # Mac OS X
+    # DLSUFFIX = .dylib
+	PG_CPPFLAGS = -std=c++11
+endif
+ifeq ($(detected_OS),Linux)
+    # DLSUFFIX = .so
 endif
 
-SHLIB_LINK := -lduckdb -lstdc++ -lgcc -lm 
+SHLIB_LINK := -lduckdb -lstdc++
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
