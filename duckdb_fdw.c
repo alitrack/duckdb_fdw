@@ -13,7 +13,7 @@
 #include "postgres.h"
 #include "duckdb_fdw.h"
 
-#include <sqlite3.h>
+#include "sqlite3.h"
 #include <stdio.h>
 
 #include "access/reloptions.h"
