@@ -193,8 +193,12 @@ sqlite_deparse_relation(StringInfo buf, Relation rel)
 	if (relname == NULL)
 		relname = RelationGetRelationName(rel);
 
-	/* always use main database for SQLite */
-	appendStringInfo(buf, "%s.%s", "main", sqlite_quote_identifier(relname, QUOTE));
+	/* 
+	 * DuckDB now has the concept of multiple databases, so pass the table name in 
+	 * without prepending "main" and without quotes. 
+	 * Ex: my_db.my_schema.my_table is allowed
+	 */
+	appendStringInfo(buf, "%s", relname);
 }
 
 static char *
