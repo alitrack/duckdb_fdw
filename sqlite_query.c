@@ -93,6 +93,15 @@ sqlite_convert_to_pg(Oid pgtyp, int pgtypmod, sqlite3_stmt * stmt, int attnum, A
 	if (sqlite_type != col_type && col_type == SQLITE3_TEXT)
 		elog(ERROR, "invalid input syntax for type =%d, column type =%d", sqlite_type, col_type);
 
+	/* if value is a list, build and return an array of values */
+	if (type_is_array(pgtyp)) {
+		bool result = sqlite3_column_value_datum(stmt, attnum, pgtyp, &value_datum);
+		if (!result)
+			elog(ERROR, "sqlite3_column_value_datum failed for type =%d, column type =%d", pgtyp, col_type);
+
+		return value_datum;
+	}
+
 	switch (pgtyp)
 	{
 			/*

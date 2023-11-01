@@ -193,9 +193,9 @@ sqlite_deparse_relation(StringInfo buf, Relation rel)
 	if (relname == NULL)
 		relname = RelationGetRelationName(rel);
 
-	/* 
-	 * DuckDB now has the concept of multiple databases, so pass the table name in 
-	 * without prepending "main" and without quotes. 
+	/*
+	 * DuckDB now has the concept of multiple databases, so pass the table name in
+	 * without prepending "main" and without quotes.
 	 * Ex: my_db.my_schema.my_table is allowed
 	 */
 	appendStringInfo(buf, "%s", relname);
@@ -837,6 +837,7 @@ sqlite_foreign_expr_walker(Node *node,
 					  || strcmp(opername, "avg") == 0
 					  || strcmp(opername, "max") == 0
 					  || strcmp(opername, "min") == 0
+					  || strcmp(opername, "array_agg") == 0
 					  || strcmp(opername, "count") == 0))
 				{
 					return false;
@@ -3122,7 +3123,7 @@ sqlite_is_builtin(Oid oid)
 {
 #if PG_VERSION_NUM >= 120000
 	return (oid < FirstGenbkiObjectId);
-#else 
+#else
 	return (oid < FirstBootstrapObjectId);
 #endif
 }

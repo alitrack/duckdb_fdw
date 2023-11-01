@@ -2,6 +2,19 @@
 #include "sqlite3.h"
 #include "duckdb.hpp"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include "postgres.h"
+#include "access/htup_details.h"
+#include "catalog/pg_type.h"
+#include "utils/array.h"
+#include "utils/lsyscache.h"
+#include "utils/syscache.h"
+#ifdef __cplusplus
+}
+#endif
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -509,14 +522,7 @@ int sqlite3_column_count(sqlite3_stmt *pStmt) {
 ////////////////////////////
 //     sqlite3_column     //
 ////////////////////////////
-int sqlite3_column_type(sqlite3_stmt *pStmt, int iCol) {
-	if (!pStmt || !pStmt->result || !pStmt->current_chunk) {
-		return 0;
-	}
-	if (FlatVector::IsNull(pStmt->current_chunk->data[iCol], pStmt->current_row)) {
-		return SQLITE_NULL;
-	}
-	auto column_type = pStmt->result->types[iCol];
+int sqlite3_column_type(const LogicalType& column_type) {
 	switch (column_type.id()) {
 	case LogicalTypeId::BOOLEAN:
 	case LogicalTypeId::TINYINT:
@@ -535,17 +541,35 @@ int sqlite3_column_type(sqlite3_stmt *pStmt, int iCol) {
 	case LogicalTypeId::TIMESTAMP_MS:
 	case LogicalTypeId::TIMESTAMP_NS:
 	case LogicalTypeId::VARCHAR:
-	case LogicalTypeId::LIST:
 	case LogicalTypeId::STRUCT:
 	case LogicalTypeId::MAP:
 		return SQLITE_TEXT;
 	case LogicalTypeId::BLOB:
 		return SQLITE_BLOB;
+	case LogicalTypeId::LIST:
+	{
+		auto child_type = ListType::GetChildType(column_type);
+		return sqlite3_column_type(child_type);
+	}
 	default:
 		// TODO(wangfenjin): agg function don't have type?
 		return SQLITE_TEXT;
 	}
 	return 0;
+}
+
+int sqlite3_column_type(sqlite3_stmt *pStmt, int iCol) {
+	if (!pStmt || !pStmt->result || !pStmt->current_chunk) {
+		return 0;
+	}
+	if (iCol < 0 || iCol >= (int)pStmt->result->types.size()) {
+		return 0;
+	}
+	if (FlatVector::IsNull(pStmt->current_chunk->data[iCol], pStmt->current_row)) {
+		return SQLITE_NULL;
+	}
+	auto column_type = pStmt->result->types[iCol];
+	return sqlite3_column_type(column_type);
 }
 
 const char *sqlite3_column_name(sqlite3_stmt *pStmt, int N) {
@@ -555,7 +579,7 @@ const char *sqlite3_column_name(sqlite3_stmt *pStmt, int N) {
 	return pStmt->prepared->GetNames()[N].c_str();
 }
 
-static bool sqlite3_column_has_value(sqlite3_stmt *pStmt, int iCol, LogicalType target_type, Value &val) {
+static bool sqlite3_column_get_value(sqlite3_stmt *pStmt, int iCol, Value &val) {
 	if (!pStmt || !pStmt->result || !pStmt->current_chunk) {
 		return false;
 	}
@@ -565,13 +589,19 @@ static bool sqlite3_column_has_value(sqlite3_stmt *pStmt, int iCol, LogicalType 
 	if (FlatVector::IsNull(pStmt->current_chunk->data[iCol], pStmt->current_row)) {
 		return false;
 	}
-	try {
-		val =
-		    pStmt->current_chunk->data[iCol].GetValue(pStmt->current_row).CastAs(*pStmt->db->con->context, target_type);
-	} catch (...) {
-		return false;
-	}
+	val = pStmt->current_chunk->data[iCol].GetValue(pStmt->current_row);
 	return true;
+}
+
+static bool sqlite3_column_has_value(sqlite3_stmt *pStmt, int iCol, LogicalType target_type, Value &val) {
+	try {
+		if (sqlite3_column_get_value(pStmt, iCol, val)) {
+			val = val.CastAs(*pStmt->db->con->context, target_type);
+			return true;
+		}
+	} catch (...) {
+	}
+	return false;
 }
 
 double sqlite3_column_double(sqlite3_stmt *stmt, int iCol) {
@@ -646,6 +676,126 @@ const void *sqlite3_column_blob(sqlite3_stmt *pStmt, int iCol) {
 		// memory error!
 		return nullptr;
 	}
+}
+
+static bool duckdb_value_as_datum(const Value &val, Oid pgType, Datum *value) {
+	const LogicalType &column_type = val.type();
+
+	switch (column_type.id()) {
+	case LogicalTypeId::BOOLEAN:
+	{
+		bool v = val.GetValue<bool>();
+		*value = BoolGetDatum(v);
+		return true;
+	}
+	case LogicalTypeId::TINYINT:
+	{
+		int8_t v = val.GetValue<int8_t>();
+		*value = Int8GetDatum(v);
+		return true;
+	}
+	case LogicalTypeId::SMALLINT:
+	{
+		int16_t v = val.GetValue<int16_t>();
+		*value = Int16GetDatum(v);
+		return true;
+	}
+	case LogicalTypeId::INTEGER:
+	{
+		int32_t v = val.GetValue<int32_t>();
+		*value = Int32GetDatum(v);
+		return true;
+	}
+	case LogicalTypeId::BIGINT:
+	{
+		int64_t v = val.GetValue<int64_t>();
+		*value = Int64GetDatum(v);
+		return true;
+	}
+	case LogicalTypeId::FLOAT:
+	{
+		float4 v = val.GetValue<float4>();
+		*value = Float4GetDatum(v);
+		return true;
+	}
+	case LogicalTypeId::DOUBLE:
+	{
+		float8 v = val.GetValue<float8>();
+		*value = Float8GetDatum(v);
+		return true;
+	}
+	case LogicalTypeId::DECIMAL:
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIME:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIME_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	{
+		HeapTuple tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(pgType));
+
+		if (HeapTupleIsValid(tuple)) {
+			regproc typeinput = ((Form_pg_type) GETSTRUCT(tuple))->typinput;
+			int typemod = ((Form_pg_type) GETSTRUCT(tuple))->typtypmod;
+			ReleaseSysCache(tuple);
+
+			std::string value_s = val.ToString();
+			Datum temp_ = CStringGetDatum(value_s.c_str());
+			*value =
+				OidFunctionCall3(typeinput, temp_, ObjectIdGetDatum(InvalidOid), Int32GetDatum(typemod));
+
+			return true;
+		}
+		break;
+	}
+	case LogicalTypeId::LIST:
+	{
+		Oid element_type = get_element_type(pgType);
+
+		ArrayBuildState *astate = NULL;
+		astate = initArrayResult(element_type, CurrentMemoryContext, false);
+
+		const auto &children = ListValue::GetChildren(val);
+		for (const auto &child : children) {
+			Datum child_value = 0;
+
+			if (duckdb_value_as_datum(child, element_type, &child_value)) {
+				astate = accumArrayResult(astate,
+							child_value,
+							false,
+							element_type,
+							CurrentMemoryContext);
+			}
+		}
+
+		Datum array_result = makeArrayResult(astate, CurrentMemoryContext);
+		*value = PointerGetDatum(array_result);
+		return true;
+	}
+	case LogicalTypeId::VARCHAR:
+	default:
+	{
+		std::string value_s = val.ToString();
+
+		text *text_ptr = (text *) palloc(value_s.size() + VARHDRSZ);
+		SET_VARSIZE(text_ptr, value_s.size() + VARHDRSZ);
+		memcpy(VARDATA(text_ptr), value_s.c_str(), value_s.size());
+
+		*value = CStringGetDatum(text_ptr);
+		return true;
+	}
+	}
+	return false;
+}
+
+bool sqlite3_column_value_datum(sqlite3_stmt *pStmt, int iCol, Oid pgType, Datum *value) {
+	Value val;
+	if (sqlite3_column_get_value(pStmt, iCol, val) && duckdb_value_as_datum(val, pgType, value)) {
+		return true;
+	}
+	return false;
 }
 
 ////////////////////////////
