@@ -873,7 +873,7 @@ sqlite_foreign_expr_walker(Node *node,
 						return false;
 				}
 
-				if (agg->aggorder || agg->aggfilter)
+				if (agg->aggorder /* || agg->aggfilter --> FILTER expression can be evaluated on the remote server */)
 				{
 					return false;
 				}
