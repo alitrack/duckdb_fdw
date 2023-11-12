@@ -771,7 +771,7 @@ static bool duckdb_value_as_datum(const Value &val, Oid pgType, Datum *value) {
 		}
 
 		Datum array_result = makeArrayResult(astate, CurrentMemoryContext);
-		*value = PointerGetDatum(array_result);
+		*value = array_result;
 		return true;
 	}
 	case LogicalTypeId::VARCHAR:
@@ -779,7 +779,7 @@ static bool duckdb_value_as_datum(const Value &val, Oid pgType, Datum *value) {
 	{
 		std::string value_s = val.ToString();
 
-		text *text_ptr = (text *) palloc(value_s.size() + VARHDRSZ);
+		char *text_ptr = (char *) palloc(value_s.size() + VARHDRSZ);
 		SET_VARSIZE(text_ptr, value_s.size() + VARHDRSZ);
 		memcpy(VARDATA(text_ptr), value_s.c_str(), value_s.size());
 

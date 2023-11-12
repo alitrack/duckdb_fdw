@@ -128,7 +128,7 @@ sqlite_convert_to_pg(Oid pgtyp, int pgtypmod, sqlite3_stmt * stmt, int attnum, A
 				value_datum = (Datum) palloc0(blobsize + VARHDRSZ);
 				memcpy(VARDATA(value_datum), sqlite3_column_blob(stmt, attnum), blobsize);
 				SET_VARSIZE(value_datum, blobsize + VARHDRSZ);
-				return PointerGetDatum(value_datum);
+				return PointerGetDatum((const void *)value_datum);
 			}
 		case INT2OID:
 			{
