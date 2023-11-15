@@ -539,6 +539,8 @@ sqlite_foreign_expr_walker(Node *node,
 				 */
 				if (!(func->funcformat == COERCE_IMPLICIT_CAST
 					  || strcmp(opername, "abs") == 0
+					  || strcmp(opername, "floor") == 0
+					  || strcmp(opername, "ceil") == 0
 					  || strcmp(opername, "btrim") == 0
 					  || strcmp(opername, "length") == 0
 					  || strcmp(opername, "ltrim") == 0
