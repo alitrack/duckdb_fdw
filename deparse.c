@@ -151,6 +151,7 @@ static Node *sqlite_deparse_sort_group_clause(Index ref, List *tlist, bool force
 											  deparse_expr_cxt *context);
 static void sqlite_deparse_explicit_target_list(List *tlist, List **retrieved_attrs,
 												deparse_expr_cxt *context);
+static void sqlite_deparse_minmax_expr(MinMaxExpr *node, deparse_expr_cxt *context);
 
 /*
  * Helper functions
@@ -924,6 +925,43 @@ sqlite_foreign_expr_walker(Node *node,
 				 * an input foreign Var (same logic as for a function).
 				 */
 				collation = a->array_collid;
+				if (collation == InvalidOid)
+					state = FDW_COLLATE_NONE;
+				else if (inner_cxt.state == FDW_COLLATE_SAFE &&
+						 collation == inner_cxt.collation)
+					state = FDW_COLLATE_SAFE;
+				else if (collation == DEFAULT_COLLATION_OID)
+					state = FDW_COLLATE_NONE;
+				else
+					state = FDW_COLLATE_UNSAFE;
+			}
+			break;
+		case T_MinMaxExpr:
+			{
+				MinMaxExpr *mmexpr = (MinMaxExpr *) node;
+
+				if (mmexpr->op != IS_LEAST && mmexpr->op != IS_GREATEST)
+					return false;
+
+				if (!sqlite_foreign_expr_walker((Node *) mmexpr->args,
+												glob_cxt, &inner_cxt))
+					return false;
+
+				/*
+				 * If minmax's input collation is not derived from a foreign
+				 * Var, it can't be sent to remote.
+				 */
+				if (mmexpr->inputcollid == InvalidOid)
+					 /* OK, inputs are all noncollatable */ ;
+				else if (inner_cxt.state != FDW_COLLATE_SAFE ||
+						 mmexpr->inputcollid != inner_cxt.collation)
+					return false;
+
+				/*
+				 * MinMaxExpr must not introduce a collation not derived from
+				 * an input foreign Var (same logic as for a function).
+				 */
+				collation = mmexpr->minmaxcollid;
 				if (collation == InvalidOid)
 					state = FDW_COLLATE_NONE;
 				else if (inner_cxt.state == FDW_COLLATE_SAFE &&
@@ -2066,6 +2104,9 @@ sqlite_deparse_expr(Expr *node, deparse_expr_cxt *context)
 		case T_NullIfExpr:
 			sqlite_deparse_null_if_expr((NullIfExpr *) node, context);
 			break;
+		case T_MinMaxExpr:
+			sqlite_deparse_minmax_expr((MinMaxExpr *) node, context);
+			break;
 		case T_Aggref:
 			sqlite_deparse_aggref((Aggref *) node, context);
 			break;
@@ -3065,6 +3106,37 @@ sqlite_deparse_coalesce_expr(CoalesceExpr *node, deparse_expr_cxt *context)
 	bool		first = true;
 
 	appendStringInfoString(buf, "COALESCE(");
+	foreach(lc, node->args)
+	{
+		if (!first)
+			appendStringInfoString(buf, ", ");
+		first = false;
+
+		sqlite_deparse_expr(lfirst(lc), context);
+	}
+	appendStringInfoChar(buf, ')');
+}
+
+/*
+ * Deparse given MinMaxExpr node.
+ */
+static void
+sqlite_deparse_minmax_expr(MinMaxExpr *node, deparse_expr_cxt *context)
+{
+	StringInfo	buf = context->buf;
+	ListCell   *lc;
+	bool		first = true;
+
+	/* Check operation accepted. */
+	Assert(node->op == IS_LEAST || node->op == IS_GREATEST);
+
+	if (node->op == IS_LEAST) {
+		appendStringInfoString(buf, "LEAST(");
+	}
+	else {
+		appendStringInfoString(buf, "GREATEST(");
+	}
+
 	foreach(lc, node->args)
 	{
 		if (!first)
