@@ -841,6 +841,9 @@ sqlite_foreign_expr_walker(Node *node,
 					  || strcmp(opername, "max") == 0
 					  || strcmp(opername, "min") == 0
 					  || strcmp(opername, "array_agg") == 0
+					  || strcmp(opername, "stddev_pop") == 0
+					  || strcmp(opername, "stddev_samp") == 0
+					  || strcmp(opername, "percentile_cont") == 0
 					  || strcmp(opername, "count") == 0))
 				{
 					return false;
@@ -874,11 +877,6 @@ sqlite_foreign_expr_walker(Node *node,
 
 					if (!sqlite_foreign_expr_walker(n, glob_cxt, &inner_cxt))
 						return false;
-				}
-
-				if (agg->aggorder /* || agg->aggfilter --> FILTER expression can be evaluated on the remote server */)
-				{
-					return false;
 				}
 
 				/*
