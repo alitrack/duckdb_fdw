@@ -843,7 +843,9 @@ sqlite_foreign_expr_walker(Node *node,
 					  || strcmp(opername, "array_agg") == 0
 					  || strcmp(opername, "stddev_pop") == 0
 					  || strcmp(opername, "stddev_samp") == 0
+					  || strcmp(opername, "mode") == 0
 					  || strcmp(opername, "percentile_cont") == 0
+					  || strcmp(opername, "percentile_disc") == 0
 					  || strcmp(opername, "count") == 0))
 				{
 					return false;
