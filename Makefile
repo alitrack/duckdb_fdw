@@ -43,6 +43,7 @@ SHLIB_LINK := -lduckdb -lstdc++
 ifdef USE_PGXS
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
+VERSION := $(shell $(PG_CONFIG) --version)
 include $(PGXS)
 ifndef MAJORVERSION
 MAJORVERSION := $(basename $(VERSION))
