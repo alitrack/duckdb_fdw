@@ -2,7 +2,7 @@ DuckDB Foreign Data Wrapper for PostgreSQL
 ==========================================
 
 This is a foreign data wrapper (FDW) to connect [PostgreSQL](https://www.postgresql.org/)
-to [DuckDB](https://duckdb.org/) database file. This FDW works with PostgreSQL 9.6 ... 15 and confirmed with some versions of DuckDB.
+to [DuckDB](https://duckdb.org/) database file. This FDW works with PostgreSQL 9.6 ... 16 and confirmed with some versions of DuckDB.
 
 <img src="https://upload.wikimedia.org/wikipedia/commons/2/29/Postgresql_elephant.svg" align="center" height="100" alt="PostgreSQL"/>	+	<img src="https://user-images.githubusercontent.com/41448637/222924178-7e622cad-fec4-49e6-b8fb-33be4447f17d.png" align="center" height="100" alt="DuckDB"/>
 

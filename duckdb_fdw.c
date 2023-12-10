@@ -28,6 +28,11 @@
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
 #include "optimizer/cost.h"
+#if (PG_VERSION_NUM >= 130010 && PG_VERSION_NUM < 140000) || \
+	(PG_VERSION_NUM >= 140007 && PG_VERSION_NUM < 150000) || \
+	(PG_VERSION_NUM >= 150002)
+#include "optimizer/inherit.h"
+#endif
 #include "optimizer/clauses.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/paths.h"
@@ -496,7 +501,7 @@ sqlite_prepare_wrapper(ForeignServer *server, sqlite3 * db, char *query, sqlite3
 	// db = sqlite_get_connection(server, false);
 
 	// elog(DEBUG1, "duckdb_fdw : %s %s %p %p %p %p\n", __func__, query, server,db,&stmt,stmt);
-	
+
 	rc = sqlite3_prepare_v2(db, query, -1, stmt, pzTail);
 	// elog(DEBUG1, "duckdb_fdw : %s %s %d \n", __func__, query, rc);
 	if (rc != SQLITE_OK)
@@ -520,7 +525,9 @@ sqliteGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
 {
 	SqliteFdwRelationInfo *fpinfo;
 	ListCell   *lc;
+#if PG_VERSION_NUM < 160000
 	RangeTblEntry *rte = planner_rt_fetch(baserel->relid, root);
+#endif
 
 	elog(DEBUG1, "duckdb_fdw : %s", __func__);
 
@@ -549,7 +556,12 @@ sqliteGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
 	 */
 	if (fpinfo->use_remote_estimate)
 	{
+#if (PG_VERSION_NUM < 160000)
 		Oid			userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
+#else
+		Oid			userid;
+		userid = OidIsValid(baserel->userid) ? baserel->userid : GetUserId();
+#endif
 
 		fpinfo->user = GetUserMapping(userid, fpinfo->server->serverid);
 	}
@@ -1054,8 +1066,6 @@ sqliteGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid
 		ParamPathInfo *param_info = (ParamPathInfo *) lfirst(lc);
 		double		rows;
 		int			width;
-		Cost		startup_cost;
-		Cost		total_cost;
 
 		/* Get a cost estimate from the remote */
 		sqlite_estimate_path_cost_size(root, baserel,
@@ -1261,8 +1271,6 @@ sqliteGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
 		 */
 		if (outer_plan)
 		{
-			ListCell   *lc;
-
 			/*
 			 * Right now, we only consider grouping and aggregation beyond
 			 * joins. Queries involving aggregates or grouping do not require
@@ -1821,22 +1829,31 @@ sqlitePlanForeignModify(PlannerInfo *root,
 	}
 	else if (operation == CMD_UPDATE)
 	{
+		AttrNumber	attno;
+#if (PG_VERSION_NUM >= 130010 && PG_VERSION_NUM < 140000) || \
+	(PG_VERSION_NUM >= 140007 && PG_VERSION_NUM < 150000) || \
+	(PG_VERSION_NUM >= 150002)
+		int			col;
+		RelOptInfo *rel = find_base_rel(root, resultRelation);
+		Bitmapset  *allUpdatedCols = get_rel_all_updated_cols(root, rel);
 
-		Bitmapset  *tmpset;
-
-		AttrNumber	col;
-#if (PG_VERSION_NUM >= 120000)
-		tmpset = bms_union(rte->updatedCols, rte->extraUpdatedCols);
-#else
-		tmpset = bms_copy(rte->updatedCols);
-#endif
-		while ((col = bms_first_member(tmpset)) >= 0)
+		col = -1;
+		while ((col = bms_next_member(allUpdatedCols, col))>= 0)
 		{
-			col += FirstLowInvalidHeapAttributeNumber;
-			if (col <= InvalidAttrNumber)	/* shouldn't happen */
+			/* bit numbers are offset by FirstLowInvalidHeapAttributeNumber */
+			attno = col + FirstLowInvalidHeapAttributeNumber;
+#else
+		Bitmapset  *tmpset;
+		tmpset = bms_union(rte->updatedCols, rte->extraUpdatedCols);
+
+		while ((attno = bms_first_member(tmpset)) >= 0)
+		{
+			attno += FirstLowInvalidHeapAttributeNumber;
+#endif
+			if (attno <= InvalidAttrNumber)	/* shouldn't happen */
 				elog(ERROR, "system-column update is not supported");
 
-			targetAttrs = lappend_int(targetAttrs, col);
+			targetAttrs = lappend_int(targetAttrs, attno);
 		}
 	}
 
@@ -2986,7 +3003,7 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 
 			char	   *table;
 			int			rc = sqlite3_step(sql_stmt);
-			
+
 			if (rc == SQLITE_DONE){
 				sqlite3_reset(sql_stmt);
 				break;
@@ -2997,7 +3014,7 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 				 * Not pass sql_stmt to sqlitefdw_report_error because it is
 				 * finalized in PG_CATCH
 				 */
-				
+
 				sqlitefdw_report_error(ERROR, NULL, db, sqlite3_sql(sql_stmt), rc);
 			}
 			table = (char *) sqlite3_column_text(sql_stmt, 0);
@@ -3007,7 +3024,7 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 
 		foreach(lc, tables)
 		{
-			char	   *table = (char *) lfirst(lc);	
+			char	   *table = (char *) lfirst(lc);
 			bool		first_item = true;
 			char		*query = palloc0(strlen(table) + 30);
 
@@ -3025,7 +3042,7 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 				char	   *default_val;
 				int			primary_key;
 				int			rc = sqlite3_step(pragma_stmt);
-				
+
 				if (rc == SQLITE_DONE){
 					sqlite3_reset(pragma_stmt);
 					break;
@@ -3086,7 +3103,7 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 		sqlite3_finalize(sql_stmt);
 	if (pragma_stmt)
 		sqlite3_finalize(pragma_stmt);
-	
+
 	return commands;
 }
 
@@ -3736,10 +3753,10 @@ sqlite_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel)
 				 */
 				foreach(l, aggvars)
 				{
-					Expr	   *expr = (Expr *) lfirst(l);
+					Expr	   *aggref = (Expr *) lfirst(l);
 
-					if (IsA(expr, Aggref))
-						tlist = add_to_flat_tlist(tlist, list_make1(expr));
+					if (IsA(aggref, Aggref))
+						tlist = add_to_flat_tlist(tlist, list_make1(aggref));
 				}
 			}
 		}
@@ -3753,7 +3770,6 @@ sqlite_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel)
 	 */
 	if (root->hasHavingQual && query->havingQual)
 	{
-		ListCell   *lc;
 
 		foreach(lc, (List *) query->havingQual)
 		{
@@ -3775,6 +3791,9 @@ sqlite_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel)
 									  true,
 									  false,
 									  false,
+#if (PG_VERSION_NUM >= 160000)
+									  false,
+#endif
 									  root->qual_security_level,
 									  grouped_rel->relids,
 									  NULL,
@@ -3796,8 +3815,7 @@ sqlite_foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel)
 	 */
 	if (fpinfo->local_conds)
 	{
-		List	   *aggvars = NIL;
-		ListCell   *lc;
+		aggvars = NIL;
 
 		foreach(lc, fpinfo->local_conds)
 		{
@@ -5481,7 +5499,7 @@ duckdb_execute(PG_FUNCTION_ARGS)
 
 	server = GetForeignServerByName(srvname->data, false);
 	db = sqlite_get_connection(server, false);
-	
+
 	PG_TRY();
 	{
 		sqlite_prepare_wrapper(server,db, query, (sqlite3_stmt * *) & sql_stmt, NULL,false);
