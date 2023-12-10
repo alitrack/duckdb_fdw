@@ -33,6 +33,7 @@
 #ifndef SQLITE3_H
 #define SQLITE3_H
 #include <stdarg.h>     /* Needed for the definition of va_list */
+#include <stdint.h>     /* Needed for the definition of uintptr_t */
 
 /*
 ** Make sure we can call this stuff from C++.
@@ -65,6 +66,16 @@ extern "C" {
 #endif
 #ifndef SQLITE_SYSAPI
 # define SQLITE_SYSAPI
+#endif
+
+/*
+** Ensure symbols of fundamental types in Postgres.
+ */
+#ifndef Oid
+typedef unsigned int Oid;
+#endif
+#ifndef Datum
+typedef uintptr_t Datum;
 #endif
 
 /*
@@ -4962,6 +4973,9 @@ SQLITE_API int sqlite3_data_count(sqlite3_stmt *pStmt);
 ** by invoking the [sqlite3_errcode()] immediately after the suspect
 ** return value is obtained and before any
 ** other SQLite interface is called on the same [database connection].
+**
+** ^The sqlite3_column_value_datum() routine returns the value as Postgres
+** Datum type for the data type of the result column.
 */
 SQLITE_API const void *sqlite3_column_blob(sqlite3_stmt*, int iCol);
 SQLITE_API double sqlite3_column_double(sqlite3_stmt*, int iCol);
@@ -4973,6 +4987,7 @@ SQLITE_API sqlite3_value *sqlite3_column_value(sqlite3_stmt*, int iCol);
 SQLITE_API int sqlite3_column_bytes(sqlite3_stmt*, int iCol);
 SQLITE_API int sqlite3_column_bytes16(sqlite3_stmt*, int iCol);
 SQLITE_API int sqlite3_column_type(sqlite3_stmt*, int iCol);
+SQLITE_API bool sqlite3_column_value_datum(sqlite3_stmt*, int iCol, Oid pgType, Datum *value);
 
 /*
 ** CAPI3REF: Destroy A Prepared Statement Object
