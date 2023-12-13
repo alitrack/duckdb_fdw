@@ -1,13 +1,11 @@
-DuckDB Foreign Data Wrapper for PostgreSQL
-==========================================
+# DuckDB Foreign Data Wrapper for PostgreSQL
 
 This is a foreign data wrapper (FDW) to connect [PostgreSQL](https://www.postgresql.org/)
 to [DuckDB](https://duckdb.org/) database file. This FDW works with PostgreSQL 9.6 ... 16 and confirmed with some versions of DuckDB.
 
 <img src="https://upload.wikimedia.org/wikipedia/commons/2/29/Postgresql_elephant.svg" align="center" height="100" alt="PostgreSQL"/>	+	<img src="https://user-images.githubusercontent.com/41448637/222924178-7e622cad-fec4-49e6-b8fb-33be4447f17d.png" align="center" height="100" alt="DuckDB"/>
 
-Contents
---------
+## Contents
 
 1. [Features](#features)
 2. [Supported platforms](#supported-platforms)
@@ -24,10 +22,10 @@ Contents
 13. [Useful links](#useful-links)
 14. [License](#license)
 
-Features
---------
+## Features
 
 ### Common features
+
 - Transactions  
 - Support `TRUNCATE` by deparsing into `DELETE` statement without `WHERE` clause
 - Allow control over whether foreign servers keep connections open after transaction completion. This is controlled by `keep_connections` and defaults to on
@@ -37,6 +35,7 @@ Features
 - Support `INSERT`/`UPDATE` with generated column
 
 ### Pushdowning
+
 - *not described*
 
 ### Notes about pushdowning
@@ -47,14 +46,12 @@ Features
 
 Also see [Limitations](#limitations)
 
-Supported platforms
--------------------
+## Supported platforms
 
 `duckdb_fdw` was developed on Linux and should run on any
 reasonably POSIX-compliant system. Also there is [Visual Studio project](duckdb_fdw.vcxproj).
 
-Installation
-------------
+## Installation
 
 ### Package installation
 
@@ -63,9 +60,10 @@ No Linux distributives internal packages with `duckdb_fdw` are avalillable.
 ### Source installation
 
 Prerequisites:
-* `postgresql-server-{version}-dev`
-* `gcc`
-* `make`
+
+- `postgresql-server-{version}-dev`
+- `gcc`
+- `make`
 
 #### 1. Download source
 
@@ -95,13 +93,13 @@ make install USE_PGXS=1
 ```
 
 If you want to build `duckdb_fdw` in a source tree of PostgreSQL, use
+
 ```sh
 make
 make install
 ```
 
-Usage
------
+## Usage
 
 ## CREATE SERVER options
 
@@ -128,6 +126,7 @@ Usage
 There is no user or password conceptions in DuckDB, hence `duckdb_fdw` no need any `CREATE USER MAPPING` command.
 
 In OS `duckdb_fdw` works as executed code with permissions of user of PostgreSQL server. Usually it is `postgres` OS user. For interacting with DuckDB database without access errors ensure this user have permissions on DuckDB file and, sometimes, directory of the file.
+
 - read permission on all directories by path to the DuckDB database file;
 - read permission on DuckDB database file;
 
@@ -178,8 +177,7 @@ simple unqualified `DELETE` operation.
 
 `TRUNCATE ... CASCADE` support *not described*.
 
-Functions
----------
+## Functions
 
 As well as the standard `duckdb_fdw_handler()` and `duckdb_fdw_validator()`
 functions, `duckdb_fdw` provides the following user-callable utility functions:
@@ -194,11 +192,13 @@ functions, `duckdb_fdw` provides the following user-callable utility functions:
 
 - **duckdb_fdw_version()**;
 Returns standard "version integer" as `major version * 10000 + minor version * 100 + bugfix`.
-```
-duckdb_fdw_version 
+
+```sql
+duckdb_fdw_version
 --------------------
-              20300
+              20300  
 ```
+
 ### DuckDB_execute
 
 ```sql
@@ -213,44 +213,40 @@ It is very useful to use command that duckdb_fdw does not support, for example,
 
 - add more table or view to DuckDB directly.
   
-``` sql
+```sql
 SELECT duckdb_execute('duckdb_server'
 ,'create or replace view iris_parquet  as select * from parquet_scan(''temp/iris.parquet'');');
 
 create foreign TABLE duckdb.iris_parquet(
-"Sepal.Length" float,
+"Sepal.Length" float,  
 "Sepal.Width" float,
 "Petal.Length" float,
-"Petal.Width" float,
+"Petal.Width" float,  
 "Species" text)
       SERVER duckdb_server OPTIONS (table 'iris_parquet');
 
 -- or an easy way
 
-IMPORT FOREIGN SCHEMA public limit to (iris_parquet)  FROM SERVER 
+IMPORT FOREIGN SCHEMA public limit to (iris_parquet) FROM SERVER  
 duckdb_server INTO duckdb;
 ```
 
 - run Copy command on Foreign table
 
-```sql
+```sql  
 SELECT duckdb_execute('duckdb_server'
 ,'CREATE TABLE test (a INTEGER, b INTEGER, c VARCHAR(10));
 ');
-SELECT duckdb_execute('duckdb_server'
+SELECT duckdb_execute('duckdb_server'  
 ,'COPY test FROM ''/tmp/test.csv'';');
-
 ```
 
-Identifier case handling
-------------------------
+## Identifier case handling
 
 PostgreSQL folds identifiers to lower case by default. DuckDB *behaviour not described*. It's important
 to be aware of potential issues with table and column names.
 
-
-Generated columns
------------------
+## Generated columns
 
 DuckDB provides support for [generated columns](https://www.duckdb.org/gencol.html).
 Behaviour of `duckdb_fdw` with this columns _isn't yet described_.
@@ -266,20 +262,18 @@ For more details on generated columns see:
 - [Generated Columns](https://www.postgresql.org/docs/current/ddl-generated-columns.html)
 - [CREATE FOREIGN TABLE](https://www.postgresql.org/docs/current/sql-createforeigntable.html)
 
-Character set handling
-----------------------
+## Character set handling
 
 **Yet not described**
 
-Examples
---------
+## Examples
 
-### Install the extension:
+### Install the extensio
 
 Once for a database you need, as PostgreSQL superuser.
 
 ```sql
-	CREATE EXTENSION duckdb_fdw;
+ CREATE EXTENSION duckdb_fdw;
 ```
 
 ### Create a foreign server with appropriate configuration:
@@ -287,11 +281,11 @@ Once for a database you need, as PostgreSQL superuser.
 Once for a foreign datasource you need, as PostgreSQL superuser. Please specify DuckDB database path using `database` option.
 
 ```sql
-	CREATE SERVER duckdb_server
-	FOREIGN DATA WRAPPER duckdb_fdw
-	OPTIONS (
+ CREATE SERVER duckdb_server
+ FOREIGN DATA WRAPPER duckdb_fdw
+ OPTIONS (
           database '/path/to/database'
-	);
+ );
 ```
 
 ### Grant usage on foreign server to normal user in PostgreSQL:
@@ -299,8 +293,9 @@ Once for a foreign datasource you need, as PostgreSQL superuser. Please specify 
 Once for a normal user (non-superuser) in PostgreSQL, as PostgreSQL superuser. It is a good idea to use a superuser only where really necessary, so let's allow a normal user to use the foreign server (this is not required for the example to work, but it's secirity recomedation).
 
 ```sql
-	GRANT USAGE ON FOREIGN SERVER duckdb_server TO pguser;
+ GRANT USAGE ON FOREIGN SERVER duckdb_server TO pguser;
 ```
+
 Where `pguser` is a sample user for works with foreign server (and foreign tables).
 
 ### User mapping
@@ -308,6 +303,7 @@ Where `pguser` is a sample user for works with foreign server (and foreign table
 There is no user or password conceptions in DuckDB, hence `duckdb_fdw` no need any `CREATE USER MAPPING` command. About access problems see in [CREATE USER MAPPING options](#create-user-mapping-options).
 
 ### Create foreign table
+
 All `CREATE FOREIGN TABLE` SQL commands can be executed as a normal PostgreSQL user if there were correct `GRANT USAGE ON FOREIGN SERVER`. No need PostgreSQL supersuer for secirity reasons but also works with PostgreSQL supersuer.
 
 Please specify `table` option if DuckDB table name is different from foreign table name.
@@ -375,21 +371,20 @@ As above, but with aliased column names:
 Note: `someschema` has no particular meaning and can be set to an arbitrary value.
 
 ### Access foreign table
+
 For the table from previous examples
 
 ```sql
 	SELECT * FROM t1;
 ```
 
-Limitations
------------
+## Limitations
 
 - `INSERT` into a partitioned table which has foreign partitions is not supported. Error `Not support partition insert` will display.
 - `TRUNCATE` in `duckdb_fdw` always delete data of both parent and child tables (no matter user inputs `TRUNCATE table CASCADE` or `TRUNCATE table RESTRICT`) if there are foreign-keys references with `ON DELETE CASCADE` clause.
 - `RETURNING` is not supported.
 
-Tests
------
+## Tests
 
 All tests is based on `make check`, main testing script see in [test.sh](test.sh) file. We don't profess a specific environment. You can use any POSIX-compliant system. Testing scripts from PosgreSQL-side is multi-versioned. Hence you need install PostgreSQL packages in versions listed in [sql](sql) directory. PostgreSQL server locale for messages in tests must be *english*. About base testing mechanism see in [PostgreSQL documentation](https://www.postgresql.org/docs/current/regress-run.html).
 
@@ -409,55 +404,53 @@ Testing directory have structure as following:
     \---15.0
            filename1.sql
            filename2.sql
-
 ```
+
 The test cases for each version are based on the test of corresponding version of PostgreSQL.
 You can execute test by `test.sh` directly. 
 The version of PostgreSQL is detected automatically by `$(VERSION)` variable in Makefile.
 
-Contributing
-------------
+## Contributing
 
 Opening issues and pull requests on GitHub are welcome.
 
 You don't need to squash small commits to one big in pull requests.
 
 For pull request, please make sure these items below for testing:
+
 - Create test cases (if needed) for the latest version of PostgreSQL supported by `duckdb_fdw`.
 - Execute test cases and update expectations for the latest version of PostgreSQL
 - Test creation and execution for other PostgreSQL versions are welcome but not required.
 
-Useful links
-------------
+## Useful links
 
 ### Source
 
- - https://github.com/pgspider/sqlite_fdw
- - https://pgxn.org/dist/duckdb_fdw/
+- https://github.com/pgspider/sqlite_fdw
+- https://pgxn.org/dist/duckdb_fdw/
  
- Reference FDW realisation, `postgres_fdw`
- - https://git.postgresql.org/gitweb/?p=postgresql.git;a=tree;f=contrib/postgres_fdw;hb=HEAD
+Reference FDW realisation, `postgres_fdw`
+
+- https://git.postgresql.org/gitweb/?p=postgresql.git;a=tree;f=contrib/postgres_fdw;hb=HEAD
 
 ### General FDW Documentation
 
- - https://www.postgresql.org/docs/current/ddl-foreign-data.html
- - https://www.postgresql.org/docs/current/sql-createforeigndatawrapper.html
- - https://www.postgresql.org/docs/current/sql-createforeigntable.html
- - https://www.postgresql.org/docs/current/sql-importforeignschema.html
- - https://www.postgresql.org/docs/current/fdwhandler.html
- - https://www.postgresql.org/docs/current/postgres-fdw.html
+- https://www.postgresql.org/docs/current/ddl-foreign-data.html
+- https://www.postgresql.org/docs/current/sql-createforeigndatawrapper.html
+- https://www.postgresql.org/docs/current/sql-createforeigntable.html
+- https://www.postgresql.org/docs/current/sql-importforeignschema.html
+- https://www.postgresql.org/docs/current/fdwhandler.html
+- https://www.postgresql.org/docs/current/postgres-fdw.html
 
 ### Other FDWs
 
- - https://wiki.postgresql.org/wiki/Fdw
- - https://pgxn.org/tag/fdw/
+- https://wiki.postgresql.org/wiki/Fdw
+- https://pgxn.org/tag/fdw/
 
-Special thanks
---------------
+## Special thanks
 
 Authors of https://github.com/pgspider/sqlite_fdw
 
-License
--------
+## License
 
 [MIT License](License)

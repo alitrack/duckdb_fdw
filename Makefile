@@ -31,8 +31,9 @@ ifeq ($(detected_OS),Windows)
     # DLSUFFIX = .dll
 endif
 ifeq ($(detected_OS),Darwin)        # Mac OS X
-    # DLSUFFIX = .dylib
-	PG_CPPFLAGS = -std=c++11
+    DLSUFFIX = .dylib
+    PG_CXXFLAGS = -std=c++11
+
 endif
 ifeq ($(detected_OS),Linux)
     # DLSUFFIX = .so

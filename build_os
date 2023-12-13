@@ -1,0 +1,6 @@
+make clean USE_PGXS=1
+make USE_PGXS=1
+sudo make install USE_PGXS=1
+sudo install_name_tool -change @rpath/libduckdb.dylib \
+/Applications/Postgres.app/Contents/Versions/16/lib/postgresql/libduckdb.dylib \
+/Applications/Postgres.app/Contents/Versions/16/lib/postgresql/duckdb_fdw.dylib

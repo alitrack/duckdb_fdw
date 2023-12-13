@@ -2789,7 +2789,7 @@ sqliteExecForeignUpdate(EState *estate,
 	Oid			foreignTableId = RelationGetRelid(rel);
 	ListCell   *lc = NULL;
 	int			bindnum = 0;
-	int			i = 0;
+	// int			i = 0;
 	int			rc = 0;
 
 	elog(DEBUG1, "duckdb_fdw : %s", __func__);
@@ -2816,7 +2816,7 @@ sqliteExecForeignUpdate(EState *estate,
 
 		sqlite_bind_sql_var(type, bindnum, value, fmstate->stmt, &is_null);
 		bindnum++;
-		i++;
+		// i++;
 	}
 
 	bindJunkColumnValue(fmstate, slot, planSlot, foreignTableId, bindnum);
@@ -2944,6 +2944,7 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 	bool		import_default = false;
 	bool		import_not_null = true;
 	List       *tables = NIL;
+	char *remote_schema = "main";
 
 	elog(DEBUG1, "duckdb_fdw : %s", __func__);
 
@@ -2969,8 +2970,10 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 	{
 		/* You want all tables, except system tables */
 		initStringInfo(&buf);
-		appendStringInfo(&buf, "SELECT name FROM sqlite_master WHERE type in('table', 'view') AND name NOT LIKE 'sqlite_%%'");
-
+		if (strcmp(stmt->remote_schema, "public") != 0){
+			remote_schema = stmt->remote_schema;
+		}
+		appendStringInfo(&buf, "SELECT table_name as name FROM information_schema.tables WHERE table_schema = %s", quote_literal_cstr(remote_schema));
 		/* Apply restrictions for LIMIT TO and EXCEPT */
 		if (stmt->list_type == FDW_IMPORT_SCHEMA_LIMIT_TO ||
 			stmt->list_type == FDW_IMPORT_SCHEMA_EXCEPT)
@@ -3028,7 +3031,7 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 			bool		first_item = true;
 			char		*query = palloc0(strlen(table) + 30);
 
-			sprintf(query, "PRAGMA table_info(%s)", quote_identifier(table));
+			sprintf(query, "PRAGMA table_info(%s.%s)", quote_identifier(remote_schema),quote_identifier(table));
 
 			resetStringInfo(&buf);
 			appendStringInfo(&buf, "CREATE FOREIGN TABLE %s.%s (\n",
@@ -3081,10 +3084,12 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 			sqlite3_finalize(pragma_stmt);
 			pragma_stmt = NULL;
 
-			appendStringInfo(&buf, "\n) SERVER %s\nOPTIONS (table ",
-							quote_identifier(stmt->server_name));
-			sqlite_deparse_string_literal(&buf, table);
-			appendStringInfoString(&buf, ");");
+			appendStringInfo(&buf, "\n) SERVER %s\nOPTIONS (table '%s.%s');",
+							quote_identifier(stmt->server_name),quote_identifier(remote_schema),quote_identifier(table));
+			// sqlite_deparse_string_literal(&buf, remote_schema);
+			// appendStringInfoString(&buf, "\".\"");
+			// sqlite_deparse_string_literal(&buf, table);
+			// appendStringInfoString(&buf, ");");
 			commands = lappend(commands, pstrdup(buf.data));
 
 			elog(DEBUG1, "duckdb_fdw : %s %s", __func__, pstrdup(buf.data));
