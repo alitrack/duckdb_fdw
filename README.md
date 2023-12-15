@@ -48,8 +48,8 @@ Also see [Limitations](#limitations)
 
 ## Supported platforms
 
-`duckdb_fdw` was developed on Linux and should run on any
-reasonably POSIX-compliant system. Also there is [Visual Studio project](duckdb_fdw.vcxproj).
+`duckdb_fdw` was developed on macOS and tested on Linux, so it should run on any
+reasonably POSIX-compliant system.
 
 ## Installation
 
