@@ -2905,13 +2905,13 @@ sqliteAnalyzeForeignTable(Relation relation,
 
 static const char * get_remote_catalog(ForeignServer *server, sqlite3 *volatile db)
 {
-	
 	sqlite3_stmt *volatile sql_stmt = NULL;
 	int rc = 0;
+	const char *result_text = NULL;
 	const char *catalog = NULL;
 	char *query = "SELECT current_catalog() as remote_catalog";
-	sqlite_prepare_wrapper(server, db, query, (sqlite3_stmt **)&sql_stmt, NULL, false);
 
+	sqlite_prepare_wrapper(server, db, query, (sqlite3_stmt **)&sql_stmt, NULL, false);
 	rc = sqlite3_step(sql_stmt);
 
 	if (rc == SQLITE_DONE)
@@ -2921,16 +2921,14 @@ static const char * get_remote_catalog(ForeignServer *server, sqlite3 *volatile 
 	else if (rc != SQLITE_ROW)
 	{
 		/*
-			* Not pass sql_stmt to sqlitefdw_report_error because it is
-			* finalized in PG_CATCH
-			*/
-
+		 * Not pass sql_stmt to sqlitefdw_report_error because it is
+		 * finalized in PG_CATCH
+		 */
 		sqlitefdw_report_error(ERROR, NULL, db, sqlite3_sql(sql_stmt), rc);
 	}
+
 	// Retrieve the result as a char*
-	
-	        // Retrieve the result as a char*
-    const char *result_text = (const char *)sqlite3_column_text(sql_stmt, 0);
+	result_text = (const char *)sqlite3_column_text(sql_stmt, 0);
 	if (result_text)
 	{
 		// Copy the result to a new memory location
@@ -2960,7 +2958,7 @@ sqliteImportForeignSchema(ImportForeignSchemaStmt *stmt,
 	bool import_default = false;
 	bool import_not_null = true;
 	List *tables = NIL;
-	
+
 	char *remote_schema = "main";
 
 	elog(DEBUG1, "duckdb_fdw : %s", __func__);
