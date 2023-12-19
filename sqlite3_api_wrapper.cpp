@@ -121,7 +121,7 @@ struct sqlite3_stmt {
 	//! The current row into the current chunk that we are iterating over
 	int64_t current_row;
 	//! Bound values, used for binding to the prepared statement
-	duckdb::vector<Value> bound_values;
+	duckdb::vector<duckdb::Value> bound_values;
 	//! Names of the prepared parameters
 	duckdb::vector<string> bound_names;
 	//! The current column values converted to string, used and filled by sqlite3_column_text
@@ -274,7 +274,7 @@ int sqlite3_prepare_v2(sqlite3 *db,           /* Database handle */
 		stmt->current_row = -1;
 		for (idx_t i = 0; i < stmt->prepared->n_param; i++) {
 			stmt->bound_names.push_back("$" + to_string(i + 1));
-			stmt->bound_values.push_back(Value());
+			stmt->bound_values.push_back(duckdb::Value());
 		}
 
 		// extract the remainder of the query and assign it to the pzTail
@@ -579,7 +579,7 @@ const char *sqlite3_column_name(sqlite3_stmt *pStmt, int N) {
 	return pStmt->prepared->GetNames()[N].c_str();
 }
 
-static bool sqlite3_column_get_value(sqlite3_stmt *pStmt, int iCol, Value &val) {
+static bool sqlite3_column_get_value(sqlite3_stmt *pStmt, int iCol, duckdb::Value &val) {
 	if (!pStmt || !pStmt->result || !pStmt->current_chunk) {
 		return false;
 	}
@@ -593,7 +593,7 @@ static bool sqlite3_column_get_value(sqlite3_stmt *pStmt, int iCol, Value &val) 
 	return true;
 }
 
-static bool sqlite3_column_has_value(sqlite3_stmt *pStmt, int iCol, LogicalType target_type, Value &val) {
+static bool sqlite3_column_has_value(sqlite3_stmt *pStmt, int iCol, LogicalType target_type, duckdb::Value &val) {
 	try {
 		if (sqlite3_column_get_value(pStmt, iCol, val)) {
 			val = val.CastAs(*pStmt->db->con->context, target_type);
@@ -605,7 +605,7 @@ static bool sqlite3_column_has_value(sqlite3_stmt *pStmt, int iCol, LogicalType 
 }
 
 double sqlite3_column_double(sqlite3_stmt *stmt, int iCol) {
-	Value val;
+	duckdb::Value val;
 	if (!sqlite3_column_has_value(stmt, iCol, LogicalType::DOUBLE, val)) {
 		return 0;
 	}
@@ -613,7 +613,7 @@ double sqlite3_column_double(sqlite3_stmt *stmt, int iCol) {
 }
 
 int sqlite3_column_int(sqlite3_stmt *stmt, int iCol) {
-	Value val;
+	duckdb::Value val;
 	if (!sqlite3_column_has_value(stmt, iCol, LogicalType::INTEGER, val)) {
 		return 0;
 	}
@@ -621,7 +621,7 @@ int sqlite3_column_int(sqlite3_stmt *stmt, int iCol) {
 }
 
 sqlite3_int64 sqlite3_column_int64(sqlite3_stmt *stmt, int iCol) {
-	Value val;
+	duckdb::Value val;
 	if (!sqlite3_column_has_value(stmt, iCol, LogicalType::BIGINT, val)) {
 		return 0;
 	}
@@ -629,7 +629,7 @@ sqlite3_int64 sqlite3_column_int64(sqlite3_stmt *stmt, int iCol) {
 }
 
 const unsigned char *sqlite3_column_text(sqlite3_stmt *pStmt, int iCol) {
-	Value val;
+	duckdb::Value val;
 	if (!sqlite3_column_has_value(pStmt, iCol, LogicalType::VARCHAR, val)) {
 		return nullptr;
 	}
@@ -654,7 +654,7 @@ const unsigned char *sqlite3_column_text(sqlite3_stmt *pStmt, int iCol) {
 }
 
 const void *sqlite3_column_blob(sqlite3_stmt *pStmt, int iCol) {
-	Value val;
+	duckdb::Value val;
 	if (!sqlite3_column_has_value(pStmt, iCol, LogicalType::BLOB, val)) {
 		return nullptr;
 	}
@@ -678,7 +678,7 @@ const void *sqlite3_column_blob(sqlite3_stmt *pStmt, int iCol) {
 	}
 }
 
-static bool duckdb_value_as_datum(const Value &val, Oid pgType, Datum *value) {
+static bool duckdb_value_as_datum(const duckdb::Value &val, Oid pgType, Datum *value) {
 	const LogicalType &column_type = val.type();
 
 	switch (column_type.id()) {
@@ -791,7 +791,7 @@ static bool duckdb_value_as_datum(const Value &val, Oid pgType, Datum *value) {
 }
 
 bool sqlite3_column_value_datum(sqlite3_stmt *pStmt, int iCol, Oid pgType, Datum *value) {
-	Value val;
+	duckdb::Value val;
 	if (sqlite3_column_get_value(pStmt, iCol, val) && duckdb_value_as_datum(val, pgType, value)) {
 		return true;
 	}
@@ -830,7 +830,7 @@ int sqlite3_bind_parameter_index(sqlite3_stmt *stmt, const char *zName) {
 	return 0;
 }
 
-int sqlite3_internal_bind_value(sqlite3_stmt *stmt, int idx, Value value) {
+int sqlite3_internal_bind_value(sqlite3_stmt *stmt, int idx, duckdb::Value value) {
 	if (!stmt || !stmt->prepared || stmt->result) {
 		return SQLITE_MISUSE;
 	}
@@ -842,19 +842,19 @@ int sqlite3_internal_bind_value(sqlite3_stmt *stmt, int idx, Value value) {
 }
 
 int sqlite3_bind_int(sqlite3_stmt *stmt, int idx, int val) {
-	return sqlite3_internal_bind_value(stmt, idx, Value::INTEGER(val));
+	return sqlite3_internal_bind_value(stmt, idx, duckdb::Value::INTEGER(val));
 }
 
 int sqlite3_bind_int64(sqlite3_stmt *stmt, int idx, sqlite3_int64 val) {
-	return sqlite3_internal_bind_value(stmt, idx, Value::BIGINT(val));
+	return sqlite3_internal_bind_value(stmt, idx, duckdb::Value::BIGINT(val));
 }
 
 int sqlite3_bind_double(sqlite3_stmt *stmt, int idx, double val) {
-	return sqlite3_internal_bind_value(stmt, idx, Value::DOUBLE(val));
+	return sqlite3_internal_bind_value(stmt, idx, duckdb::Value::DOUBLE(val));
 }
 
 int sqlite3_bind_null(sqlite3_stmt *stmt, int idx) {
-	return sqlite3_internal_bind_value(stmt, idx, Value());
+	return sqlite3_internal_bind_value(stmt, idx, duckdb::Value());
 }
 
 SQLITE_API int sqlite3_bind_value(sqlite3_stmt *, int, const sqlite3_value *) {
@@ -877,7 +877,7 @@ int sqlite3_bind_text(sqlite3_stmt *stmt, int idx, const char *val, int length, 
 		val = nullptr;
 	}
 	try {
-		return sqlite3_internal_bind_value(stmt, idx, Value(value));
+		return sqlite3_internal_bind_value(stmt, idx, duckdb::Value(value));
 	} catch (std::exception &ex) {
 		return SQLITE_ERROR;
 	}
@@ -887,11 +887,11 @@ int sqlite3_bind_blob(sqlite3_stmt *stmt, int idx, const void *val, int length, 
 	if (!val) {
 		return SQLITE_MISUSE;
 	}
-	Value blob;
+	duckdb::Value blob;
 	if (length < 0) {
-		blob = Value::BLOB(string((const char *)val));
+		blob = duckdb::Value::BLOB(string((const char *)val));
 	} else {
-		blob = Value::BLOB((const_data_ptr_t)val, length);
+		blob = duckdb::Value::BLOB((const_data_ptr_t)val, length);
 	}
 	if (free_func && ((ptrdiff_t)free_func) != -1) {
 		free_func((void *)val);
@@ -1146,7 +1146,7 @@ const unsigned char sqlite3CtypeMap[256] = {
 
 int sqlite3_complete(const char *zSql) {
 	u8 state = 0; /* Current state, using numbers defined in header comment */
-	u8 token;     /* Value of the next token */
+	u8 token;     /* duckdb::Value of the next token */
 
 	/* If triggers are not supported by this compile then the statement machine
 	 ** used to detect the end of a statement is much simpler
@@ -1941,7 +1941,7 @@ const unsigned char *sqlite3_value_text(sqlite3_value *pVal) {
 	// }
 
 	// if (pVal->type == SQLiteTypeValue::INTEGER || pVal->type == SQLiteTypeValue::FLOAT) {
-	// 	Value value = (pVal->type == SQLiteTypeValue::INTEGER) ? Value::BIGINT(pVal->u.i) : Value::DOUBLE(pVal->u.r);
+	// 	duckdb::Value value = (pVal->type == SQLiteTypeValue::INTEGER) ? duckdb::Value::BIGINT(pVal->u.i) : duckdb::Value::DOUBLE(pVal->u.r);
 	// 	if (!value.DefaultTryCastAs(LogicalType::VARCHAR)) {
 	// 		pVal->db->errCode = SQLITE_NOMEM;
 	// 		return nullptr;
