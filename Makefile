@@ -44,9 +44,6 @@ ifeq ($(detected_OS),Linux)
     endif
 endif
 
-$(uname -a)
-$(echo FLAGS $PG_CXXFLAGS) 
-
 SHLIB_LINK := -lduckdb -lstdc++
 
 ifdef USE_PGXS
