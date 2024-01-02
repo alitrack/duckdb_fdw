@@ -1,0 +1,38 @@
+version: "3.3"
+services:
+    duckdb_fdw0:
+        build:
+            context: .
+            args:
+                - POSTGRES_VERSION=16
+                - DUCKDB_VERSION=0.9.2
+        ports:
+            - "5432:5432"
+        volumes:
+            - pg_data:/var/lib/postgresql/data
+            - duckdb_data:/var/lib/postgresql/duckdb
+        environment:
+            - POSTGRES_USER=postgres
+            - POSTGRES_DB=postgres
+            - POSTGRES_PASSWORD=qwert
+        # depends_on:
+        #     - mdata
+
+volumes:
+    initdb-scripts:
+        driver: local
+
+    pg_data: # Additional volume to mount the SQL script
+        driver: local
+        driver_opts:
+            o: bind
+            type: none
+            device: /Users/pete/tmp/pgduck/pg
+
+    duckdb_data:
+        driver: local
+        driver_opts: 
+            o: bind
+            type: none
+            device: /Users/pete/tmp/pgduck/duckdb
+
