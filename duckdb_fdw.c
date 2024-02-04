@@ -1830,7 +1830,14 @@ sqlitePlanForeignModify(PlannerInfo *root,
 			attno = col + FirstLowInvalidHeapAttributeNumber;
 #else
 		Bitmapset *tmpset;
-		tmpset = bms_union(rte->updatedCols, rte->extraUpdatedCols);
+		// tmpset = bms_union(rte->updatedCols, rte->extraUpdatedCols);
+		#if PG_VERSION_NUM >= 120000
+				tmpset = bms_union(rte->updatedCols, rte->extraUpdatedCols);
+		#elif PG_VERSION_NUM >= 90500
+				tmpset = rte->updatedCols;
+		#else
+				tmpset = bms_copy(rte->modifiedCols);
+		#endif  /* PG_VERSION_NUM */
 
 		while ((attno = bms_first_member(tmpset)) >= 0)
 		{

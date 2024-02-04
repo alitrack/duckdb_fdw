@@ -79,7 +79,7 @@ just download [libduckdb-linux-amd64.zip](https://github.com/duckdb/duckdb/relea
 
 ```bash
 wget -c https://github.com/duckdb/duckdb/releases/download/v0.6.1/libduckdb-linux-amd64.zip
-!unzip -d . libduckdb-linux-amd64.zip
+unzip -d . libduckdb-linux-amd64.zip
 cp libduckdb.so $(pg_config --libdir) 
 ```
 
