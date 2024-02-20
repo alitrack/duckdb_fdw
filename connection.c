@@ -181,6 +181,7 @@ static void
 sqlite_make_new_connection(ConnCacheEntry *entry, ForeignServer *server)
 {
 	const char *dbpath = NULL;
+	const char *temp_dir = NULL;
 	int flags=0;            /* Flags */
 	int			rc;
 	ListCell   *lc;
@@ -213,9 +214,11 @@ sqlite_make_new_connection(ConnCacheEntry *entry, ForeignServer *server)
 			if (*_flags!='0')
 				flags |= DUCKDB_UNSIGNED_EXTENSIONS;
 		}
+		else if (strcmp(def->defname, "temp_directory") == 0)
+			temp_dir = defGetString(def);
 	}
 
-	rc = sqlite3_open_v2(dbpath, &entry->conn,flags, NULL);
+	rc = sqlite3_open_v3(dbpath, &entry->conn,flags, NULL, temp_dir);
 	if (rc != SQLITE_OK)
 		ereport(ERROR,
 				(errcode(ERRCODE_FDW_UNABLE_TO_ESTABLISH_CONNECTION),
@@ -478,7 +481,7 @@ sqlitefdw_xact_callback(XactEvent event, void *arg)
 			entry->conn = NULL;
 		}
 	}
-	
+
 	/*
 	 * Regardless of the event type, we can now mark ourselves as out of the
 	 * transaction.  (Note: if we are here during PRE_COMMIT or PRE_PREPARE,

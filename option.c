@@ -70,6 +70,8 @@ static struct SqliteFdwOption valid_options[] =
 	/* batch_size is available on both server and table */
 	{"batch_size", ForeignServerRelationId},
 	{"batch_size", ForeignTableRelationId},
+	/* Optional directory to which to write temp files */
+	{"temp_directory", ForeignServerRelationId},
 	/* Sentinel */
 	{NULL, InvalidOid}
 };
@@ -151,6 +153,10 @@ duckdb_fdw_validator(PG_FUNCTION_ARGS)
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("\"%s\" must be an integer value greater than zero",
 								def->defname)));
+		}
+		else if (strcmp(def->defname, "temp_directory") == 0)
+		{
+			defGetString(def);
 		}
 	}
 	PG_RETURN_VOID();
