@@ -30,6 +30,9 @@ extern "C" {
 using namespace duckdb;
 using namespace std;
 
+#ifndef PreservedError
+typedef duckdb::ErrorData PreservedError;
+#endif
 
 struct TryCast {
 	template <class SRC, class DST>
