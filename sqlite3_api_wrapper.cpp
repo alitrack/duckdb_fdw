@@ -155,6 +155,15 @@ int sqlite3_open_v2(const char *filename, /* Database filename (UTF-8) */
                     int flags,            /* Flags */
                     const char *zVfs      /* Name of VFS module to use */
 ) {
+	return sqlite3_open_v3(filename, ppDb, flags, zVfs, NULL);
+}
+
+int sqlite3_open_v3(const char *filename, /* Database filename (UTF-8) */
+                    sqlite3 **ppDb,       /* OUT: SQLite db handle */
+                    int flags,            /* Flags */
+                    const char *zVfs,     /* Name of VFS module to use */
+                    const char *temp_dir  /* Temp directory to use */
+) {
 	if (filename && strcmp(filename, ":memory:") == 0) {
 		filename = NULL;
 	}
@@ -173,6 +182,9 @@ int sqlite3_open_v2(const char *filename, /* Database filename (UTF-8) */
 		}
 		if (flags & DUCKDB_UNSIGNED_EXTENSIONS) {
 			config.options.allow_unsigned_extensions = true;
+		}
+		if (temp_dir) {
+			config.options.temporary_directory = string(temp_dir);
 		}
 		//TODO
 		// config.error_manager->AddCustomError(

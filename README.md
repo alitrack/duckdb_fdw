@@ -121,6 +121,10 @@ make install
 
   Specifies the number of rows which should be inserted in a single `INSERT` operation. This setting can be overridden for individual tables.
   
+- **temp_directory** as *string*,  optional, default *NULL*
+  
+  Specifies the directory to which to write temp files.
+  
 ## CREATE USER MAPPING options
 
 There is no user or password conceptions in DuckDB, hence `duckdb_fdw` no need any `CREATE USER MAPPING` command.

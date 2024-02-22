@@ -3549,6 +3549,13 @@ SQLITE_API int sqlite3_open_v2(
   int flags,              /* Flags */
   const char *zVfs        /* Name of VFS module to use */
 );
+SQLITE_API int sqlite3_open_v3(
+  const char *filename,   /* Database filename (UTF-8) */
+  sqlite3 **ppDb,         /* OUT: SQLite db handle */
+  int flags,              /* Flags */
+  const char *zVfs,       /* Name of VFS module to use */
+  const char *temp_dir    /* Temp directory to use */
+);
 
 /*
 ** CAPI3REF: Obtain Values For URI Parameters
