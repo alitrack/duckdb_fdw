@@ -37,7 +37,11 @@ ifeq ($(detected_OS),Darwin)        # Mac OS X
 endif
 ifeq ($(detected_OS),Linux)
     # DLSUFFIX = .so
-    PG_CXXFLAGS = -std=c++11 -D_GLIBCXX_USE_CXX11_ABI=0
+    PG_CXXFLAGS = -std=c++11
+    detected_arch := $(shell uname -m)
+    ifeq ($(detected_arch),x86_64)
+        PG_CXXFLAGS = -std=c++11 -D_GLIBCXX_USE_CXX11_ABI=0
+    endif
 endif
 
 SHLIB_LINK := -lduckdb -lstdc++
