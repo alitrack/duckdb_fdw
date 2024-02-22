@@ -30,10 +30,6 @@ extern "C" {
 using namespace duckdb;
 using namespace std;
 
-#ifndef DUCKDB_VERSION_NUM
-	#define DUCKDB_VERSION_NUM 100
-#endif
-
 
 struct TryCast {
 	template <class SRC, class DST>
@@ -53,23 +49,14 @@ enum class ErrorType : uint16_t {
 	ERROR_COUNT,
 	INVALID = 65535,
 };
-
-
-	#if (DUCKDB_VERSION_NUM>=100)
-		using  PreservedError =duckdb::ErrorData ;
-	#endif
-
 struct sqlite3 {
-	duckdb::unique_ptr<duckdb::DuckDB> db;
-	duckdb::unique_ptr<duckdb::Connection> con;
+	std::unique_ptr<duckdb::DuckDB> db;
+	std::unique_ptr<duckdb::Connection> con;
 	PreservedError last_error;
 	int64_t last_changes = 0;
 	int64_t total_changes = 0;
 	int errCode; /* Most recent error code (SQLITE_*) */
 };
-
-
-
 
 struct sqlite3_value {
 	union MemValue {
