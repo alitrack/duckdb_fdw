@@ -30,7 +30,7 @@ extern "C" {
 using namespace duckdb;
 using namespace std;
 
-#ifndef PreservedError
+#if defined(ADBC_VERSION_1_1_0) || defined(DUCKDB_MAJOR_VERSION) // >= v0.10.x
 typedef duckdb::ErrorData PreservedError;
 #endif
 
