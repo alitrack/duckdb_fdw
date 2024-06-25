@@ -26,12 +26,12 @@ volumes:
         driver_opts:
             o: bind
             type: none
-            device: /Users/pete/tmp/pgduck/pg
+            device: data
 
     duckdb_data:
         driver: local
         driver_opts: 
             o: bind
             type: none
-            device: /Users/pete/tmp/pgduck/duckdb
+            device: data
 
