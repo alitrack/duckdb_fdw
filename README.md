@@ -74,11 +74,11 @@ cd duckdb_fdw
 
 #### 2. Download DuckDB library
 
-For example, we want to compile under Linux AMD64 with DuckDB v0.6.1
-just download [libduckdb-linux-amd64.zip](https://github.com/duckdb/duckdb/releases/download/v0.6.1/libduckdb-linux-amd64.zip)
+For example, we want to compile under Linux AMD64 with DuckDB v1.0.0
+just download [libduckdb-linux-amd64.zip](https://github.com/duckdb/duckdb/releases/download/v1.0.0/libduckdb-linux-amd64.zip)
 
 ```bash
-wget -c https://github.com/duckdb/duckdb/releases/download/v0.6.1/libduckdb-linux-amd64.zip
+wget -c https://github.com/duckdb/duckdb/releases/download/v1.0.0/libduckdb-linux-amd64.zip
 unzip -d . libduckdb-linux-amd64.zip
 cp libduckdb.so $(pg_config --libdir) 
 ```

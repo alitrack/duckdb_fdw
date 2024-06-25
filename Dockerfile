@@ -4,7 +4,7 @@ FROM postgres:${POSTGRES_VERSION} AS builder
 
 # Set default values for build arguments
 ARG POSTGRES_VERSION=16
-ARG DUCKDB_VERSION=0.9.2
+ARG DUCKDB_VERSION=1.0.0
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
