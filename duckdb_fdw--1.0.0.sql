@@ -27,3 +27,19 @@ AS 'MODULE_PATHNAME' LANGUAGE C;
 
 COMMENT ON FUNCTION duckdb_execute(name, text)
 IS 'executes an arbitrary SQL statement  return no results on the DuckDB';
+
+CREATE FUNCTION duckdb_fdw_get_connections (OUT server_name text,
+                                            OUT valid boolean)
+    RETURNS SETOF record
+AS 'MODULE_PATHNAME'
+    LANGUAGE C STRICT PARALLEL RESTRICTED;
+
+CREATE FUNCTION duckdb_fdw_disconnect (text)
+    RETURNS bool
+AS 'MODULE_PATHNAME'
+    LANGUAGE C STRICT PARALLEL RESTRICTED;
+
+CREATE FUNCTION duckdb_fdw_disconnect_all ()
+    RETURNS bool
+AS 'MODULE_PATHNAME'
+    LANGUAGE C STRICT PARALLEL RESTRICTED;
