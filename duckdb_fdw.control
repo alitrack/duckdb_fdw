@@ -1,5 +1,5 @@
 # duckdb FDW
 comment = 'DuckDB Foreign Data Wrapper'
-default_version = '1.1'
+default_version = '1.0.0'
 module_pathname = '$libdir/duckdb_fdw'
 relocatable = true
