@@ -1,7 +1,7 @@
 # DuckDB Foreign Data Wrapper for PostgreSQL
 
 This is a foreign data wrapper (FDW) to connect [PostgreSQL](https://www.postgresql.org/)
-to [DuckDB](https://duckdb.org/) database file. This FDW works with PostgreSQL 9.6 ... 16 and confirmed with some versions of DuckDB.
+to [DuckDB](https://duckdb.org/) database file. This FDW works with PostgreSQL 9.6 ... 16 and works with exact same version of `libduckdb`.
 
 <img src="https://upload.wikimedia.org/wikipedia/commons/2/29/Postgresql_elephant.svg" align="center" height="100" alt="PostgreSQL"/>	+	<img src="https://user-images.githubusercontent.com/41448637/222924178-7e622cad-fec4-49e6-b8fb-33be4447f17d.png" align="center" height="100" alt="DuckDB"/>
 
@@ -48,14 +48,14 @@ Also see [Limitations](#limitations)
 
 ## Supported platforms
 
-`duckdb_fdw` was developed on macOS and tested on Linux, so it should run on any
-reasonably POSIX-compliant system.
+`duckdb_fdw` was developed on macOS and tested on Linux, so it should run on any reasonably POSIX-compliant system.
 
 ## Installation
 
 ### Package installation
 
-No Linux distributives internal packages with `duckdb_fdw` are avalillable.
+There's a `duckdb_fdw` rpm available on Pigsty's PGSQL [yum repository](https://repo.pigsty.cc/repo) for el8 and el9
+
 
 ### Source installation
 
@@ -74,14 +74,17 @@ cd duckdb_fdw
 
 #### 2. Download DuckDB library
 
-For example, we want to compile under Linux AMD64 with DuckDB v1.0.0
-just download [libduckdb-linux-amd64.zip](https://github.com/duckdb/duckdb/releases/download/v1.0.0/libduckdb-linux-amd64.zip)
+For example, we want to compile under Linux AMD64 with DuckDB v1.0.0, just download [libduckdb-linux-amd64.zip](https://github.com/duckdb/duckdb/releases/download/v1.0.0/libduckdb-linux-amd64.zip)
 
 ```bash
 wget -c https://github.com/duckdb/duckdb/releases/download/v1.0.0/libduckdb-linux-amd64.zip
 unzip -d . libduckdb-linux-amd64.zip
-cp libduckdb.so $(pg_config --libdir) 
+
+# you can also put the libduckdb.so to a directory in LD_LIBRARY_PATH, such as /usr/lib64
+cp libduckdb.so $(pg_config --libdir)
 ```
+
+Beware that this libduckdb.so is build on ubuntu with higher glibc version, to use `duckdb_fdw` on el8 / el9, you have to compile `[libduckdb-src.zip`](https://github.com/duckdb/duckdb/releases/download/v1.0.0/libduckdb-src.zip) from source
 
 #### 3. Build and install duckdb_fdw
 
@@ -195,12 +198,13 @@ functions, `duckdb_fdw` provides the following user-callable utility functions:
 - bool **duckdb_fdw_disconnect_all()**
 
 - **duckdb_fdw_version()**;
-Returns standard "version integer" as `major version * 10000 + minor version * 100 + bugfix`.
 
-```sql
+  Returns standard "version integer" as `major version * 10000 + minor version * 100 + bugfix`.
+
+```
 duckdb_fdw_version
 --------------------
-              20300  
+              10000  
 ```
 
 ### DuckDB_execute
@@ -211,7 +215,8 @@ FUNCTION duckdb_execute(server name, stmt text) RETURNS void
 
 This function can be used to execute arbitrary SQL statements on the remote DuckDB server. That will only work with statements that do not return results (typically DDL statements).
 
-Be careful when using this function, since it might disturb the transaction management of duckdb_fdw. Remember that running a DDL statement in DuckDB will issue an implicit COMMIT. You are best advised to use this function outside of multi-statement transactions.
+Be careful when using this function, since it might disturb the transaction management of duckdb_fdw. Remember that running a DDL statement in DuckDB will issue an implicit COMMIT.
+You are best advised to use this function outside multi-statement transactions.
 
 It is very useful to use command that duckdb_fdw does not support, for example,
 
@@ -253,7 +258,7 @@ to be aware of potential issues with table and column names.
 ## Generated columns
 
 DuckDB provides support for [generated columns](https://www.duckdb.org/gencol.html).
-Behaviour of `duckdb_fdw` with this columns _isn't yet described_.
+Behaviour of `duckdb_fdw` with these columns _isn't yet described_.
 
 Note that while `duckdb_fdw` will `INSERT` or `UPDATE` the generated column value
 in DuckDB, there is nothing to stop the value being modified within DuckDB,
@@ -272,12 +277,12 @@ For more details on generated columns see:
 
 ## Examples
 
-### Install the extensio
+### Install the extension
 
 Once for a database you need, as PostgreSQL superuser.
 
 ```sql
- CREATE EXTENSION duckdb_fdw;
+CREATE EXTENSION duckdb_fdw;
 ```
 
 ### Create a foreign server with appropriate configuration:
@@ -285,11 +290,11 @@ Once for a database you need, as PostgreSQL superuser.
 Once for a foreign datasource you need, as PostgreSQL superuser. Please specify DuckDB database path using `database` option.
 
 ```sql
- CREATE SERVER duckdb_server
- FOREIGN DATA WRAPPER duckdb_fdw
- OPTIONS (
-          database '/path/to/database'
- );
+CREATE SERVER duckdb_server
+FOREIGN DATA WRAPPER duckdb_fdw
+OPTIONS (
+    database '/path/to/database'
+);
 ```
 
 ### Grant usage on foreign server to normal user in PostgreSQL:
@@ -297,7 +302,7 @@ Once for a foreign datasource you need, as PostgreSQL superuser. Please specify 
 Once for a normal user (non-superuser) in PostgreSQL, as PostgreSQL superuser. It is a good idea to use a superuser only where really necessary, so let's allow a normal user to use the foreign server (this is not required for the example to work, but it's secirity recomedation).
 
 ```sql
- GRANT USAGE ON FOREIGN SERVER duckdb_server TO pguser;
+GRANT USAGE ON FOREIGN SERVER duckdb_server TO pguser;
 ```
 
 Where `pguser` is a sample user for works with foreign server (and foreign tables).
@@ -390,11 +395,13 @@ For the table from previous examples
 
 ## Tests
 
-All tests is based on `make check`, main testing script see in [test.sh](test.sh) file. We don't profess a specific environment. You can use any POSIX-compliant system. Testing scripts from PosgreSQL-side is multi-versioned. Hence you need install PostgreSQL packages in versions listed in [sql](sql) directory. PostgreSQL server locale for messages in tests must be *english*. About base testing mechanism see in [PostgreSQL documentation](https://www.postgresql.org/docs/current/regress-run.html).
+All tests are based on `make check`, main testing script see in [test.sh](test.sh) file. We don't profess a specific environment. You can use any POSIX-compliant system. 
+Testing scripts from PosgreSQL-side is multi-versioned. Hence, you need install PostgreSQL packages in versions listed in [sql](sql) directory. 
+PostgreSQL server locale for messages in tests must be *english*. About base testing mechanism see in [PostgreSQL documentation](https://www.postgresql.org/docs/current/regress-run.html).
 
 Testing directory have structure as following:
 
-```sql
+```
 +---sql
     +---11.7
     |       filename1.sql
@@ -457,4 +464,4 @@ Authors of https://github.com/pgspider/sqlite_fdw
 
 ## License
 
-[MIT License](License)
+[MIT License](LICENSE)
