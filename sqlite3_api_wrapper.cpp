@@ -287,7 +287,11 @@ int sqlite3_prepare_v2(sqlite3 *db,           /* Database handle */
 		stmt->query_string = query;
 		stmt->prepared = std::move(prepared);
 		stmt->current_row = -1;
+		#if (DUCKDB_MAJOR_VERSION >= 1) && (DUCKDB_MINOR_VERSION >= 1)
+		for (idx_t i = 0; i < stmt->prepared->named_param_map.size(); i++) {
+		#else
 		for (idx_t i = 0; i < stmt->prepared->n_param; i++) {
+		#endif
 			stmt->bound_names.push_back("$" + to_string(i + 1));
 			stmt->bound_values.push_back(duckdb::Value());
 		}
@@ -820,14 +824,22 @@ int sqlite3_bind_parameter_count(sqlite3_stmt *stmt) {
 	if (!stmt) {
 		return 0;
 	}
+	#if (DUCKDB_MAJOR_VERSION >= 1) && (DUCKDB_MINOR_VERSION >= 1)
+	return stmt->prepared->named_param_map.size();
+	#else
 	return stmt->prepared->n_param;
+	#endif
 }
 
 const char *sqlite3_bind_parameter_name(sqlite3_stmt *stmt, int idx) {
 	if (!stmt) {
 		return nullptr;
 	}
+	#if (DUCKDB_MAJOR_VERSION >= 1) && (DUCKDB_MINOR_VERSION >= 1)
+	if (idx < 1 || idx > (int)stmt->prepared->named_param_map.size()) {
+	#else
 	if (idx < 1 || idx > (int)stmt->prepared->n_param) {
+	#endif
 		return nullptr;
 	}
 	return stmt->bound_names[idx - 1].c_str();
@@ -849,7 +861,11 @@ int sqlite3_internal_bind_value(sqlite3_stmt *stmt, int idx, duckdb::Value value
 	if (!stmt || !stmt->prepared || stmt->result) {
 		return SQLITE_MISUSE;
 	}
+	#if (DUCKDB_MAJOR_VERSION >= 1) && (DUCKDB_MINOR_VERSION >= 1)
+	if (idx < 1 || idx > (int)stmt->prepared->named_param_map.size()) {
+	#else
 	if (idx < 1 || idx > (int)stmt->prepared->n_param) {
+	#endif
 		return SQLITE_RANGE;
 	}
 	stmt->bound_values[idx - 1] = value;
