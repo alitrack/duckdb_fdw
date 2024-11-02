@@ -679,7 +679,10 @@ duckdb_fdw_get_connections(PG_FUNCTION_ARGS)
 	if (!ConnectionHash)
 	{
 		/* clean up and return the tuplestore */
-		tuplestore_donestoring(tupstore);
+		#if PG_VERSION_NUM < 170000
+				/* clean up and return the tuplestore */
+				tuplestore_donestoring(tupstore);
+		#endif
 
 		PG_RETURN_VOID();
 	}
@@ -748,7 +751,9 @@ duckdb_fdw_get_connections(PG_FUNCTION_ARGS)
 	}
 
 	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
+	#if PG_VERSION_NUM < 170000
+		tuplestore_donestoring(tupstore);
+	#endif
 
 	PG_RETURN_VOID();
 #endif

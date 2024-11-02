@@ -62,3 +62,4 @@ Release/
 *.bc
 *.zip
 postgresql.log
+.vscode/

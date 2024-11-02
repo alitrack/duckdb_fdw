@@ -2134,7 +2134,10 @@ SQLITE_API void *sqlite3_profile(sqlite3 *, void (*xProfile)(void *, const char 
 }
 
 SQLITE_API int sqlite3_libversion_number(void) {
-	return SQLITE_VERSION_NUMBER;
+	// return SQLITE_VERSION_NUMBER;
+	return (DUCKDB_MAJOR_VERSION * 10000) +
+                         (DUCKDB_MINOR_VERSION * 100) +
+                         std::stoi(DUCKDB_PATCH_VERSION);
 }
 
 SQLITE_API int sqlite3_threadsafe(void) {
