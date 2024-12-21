@@ -3,8 +3,8 @@ services:
         build:
             context: .
             args:
-                - POSTGRES_VERSION=16
-                - DUCKDB_VERSION=1.0.0
+                - POSTGRES_VERSION=17
+                - DUCKDB_VERSION=1.1.3
         ports:
             - "5432:5432"
         volumes:

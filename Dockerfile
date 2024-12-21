@@ -1,10 +1,10 @@
 # Use an official PostgreSQL image as the base image
-ARG POSTGRES_VERSION=16
+ARG POSTGRES_VERSION=17
 FROM postgres:${POSTGRES_VERSION} AS builder
 
 # Set default values for build arguments
-ARG POSTGRES_VERSION=16
-ARG DUCKDB_VERSION=1.0.0
+ARG POSTGRES_VERSION=17
+ARG DUCKDB_VERSION=1.1.3
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -39,7 +39,7 @@ USER postgres
 
 # Create the final image
 FROM postgres:${POSTGRES_VERSION}
-ARG POSTGRES_VERSION=16
+ARG POSTGRES_VERSION=17
 
 # Copy duckdb_fdw artifacts from the builder stage
 COPY --from=builder duckdb_fdw/duckdb_fdw.so /usr/lib/postgresql/${POSTGRES_VERSION}/lib/

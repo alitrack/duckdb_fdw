@@ -9,15 +9,24 @@
 #
 ##########################################################################
 
+# Check if DUCKDB_VERSION is defined
+ifeq ($(DUCKDB_VERSION),)
+    # Try to read from .duckdb_version file
+    -include .duckdb_version
+
+    # If still not defined, try to get from environment
+    ifndef DUCKDB_VERSION
+        $(error DUCKDB_VERSION is not set. Please set it using: make DUCKDB_VERSION=x.x.x or create a .duckdb_version file)
+    endif
+endif
+
 MODULE_big = duckdb_fdw
 OBJS = connection.o option.o deparse.o sqlite_query.o duckdb_fdw.o sqlite3_api_wrapper.o
 
 EXTENSION = duckdb_fdw
-DATA = duckdb_fdw--1.0.0.sql duckdb_fdw--1.0.0--1.1.2.sql
+DATA = duckdb_fdw--1.0.0.sql duckdb_fdw--1.0.0--1.1.2.sql duckdb_fdw--1.1.2--1.1.3.sql
 
 REGRESS = extra/duckdb_fdw_post extra/float4 extra/float8 extra/int4 extra/int8 extra/numeric extra/join extra/limit extra/aggregates extra/prepare extra/select_having extra/select extra/insert extra/update extra/timestamp duckdb_fdw type aggregate selectfunc 
-
-SQLITE_LIB = duckdb
 
 ifeq '$(findstring ;,$(PATH))' ';'
     detected_OS := Windows
@@ -28,7 +37,7 @@ else
     detected_OS := $(patsubst MINGW%,MSYS,$(detected_OS))
 endif
 ifeq ($(detected_OS),Windows)
-    # DLSUFFIX = .dll
+    DLSUFFIX = .dll
 endif
 ifeq ($(detected_OS),Darwin)        # Mac OS X
     DLSUFFIX = .dylib
@@ -44,11 +53,12 @@ ifeq ($(detected_OS),Linux)
     endif
 endif
 
-SHLIB_LINK := -lduckdb -lstdc++
+SHLIB_LINK := -L. -lduckdb.$(DUCKDB_VERSION) -lstdc++
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
+PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
 VERSION := $(shell $(PG_CONFIG) --version)
 include $(PGXS)
 ifndef MAJORVERSION
@@ -73,3 +83,14 @@ endif
 
 REGRESS := $(addprefix $(REGRESS_PREFIX_SUB)/,$(REGRESS))
 $(shell mkdir -p results/$(REGRESS_PREFIX_SUB)/extra)
+
+
+install-duckdb:  $(shlib)
+	$(install_bin) -m 755 libduckdb.$(DUCKDB_VERSION)$(DLSUFFIX) $(DESTDIR)$(PG_LIB)
+
+install: install-duckdb
+
+uninstall-duckdb:
+	rm -f $(DESTDIR)$(PG_LIB)/libduckdb.$(DUCKDB_VERSION)$(DLSUFFIX)
+
+uninstall: uninstall-duckdb

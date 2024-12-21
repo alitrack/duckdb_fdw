@@ -10,11 +10,11 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 #pragma once
 #define DUCKDB_AMALGAMATION 1
-#define DUCKDB_SOURCE_ID "f680b7d08f"
-#define DUCKDB_VERSION "v1.1.2"
+#define DUCKDB_SOURCE_ID "19864453f7"
+#define DUCKDB_VERSION "v1.1.3"
 #define DUCKDB_MAJOR_VERSION 1
 #define DUCKDB_MINOR_VERSION 1
-#define DUCKDB_PATCH_VERSION "2"
+#define DUCKDB_PATCH_VERSION "3"
 //===----------------------------------------------------------------------===//
 //                         DuckDB
 //
@@ -2018,8 +2018,20 @@ CatalogType CatalogTypeFromString(const string &type);
 #include <atomic>
 
 namespace duckdb {
+
 using std::atomic;
-}
+
+//! NOTE: When repeatedly trying to atomically set a value in a loop, you can use as the loop condition:
+//! * std::atomic_compare_exchange_weak
+//! * std::atomic::compare_exchange_weak
+//! If not used as a loop condition, use:
+//! * std::atomic_compare_exchange_strong
+//! * std::atomic::compare_exchange_strong
+//! If this is not done correctly, we may get correctness issues when using older compiler versions (see: issue #14389)
+//! Performance may be optimized using std::memory_order, but NOT at the cost of correctness.
+//! For correct examples of this, see concurrentqueue.h
+
+} // namespace duckdb
 
 //===----------------------------------------------------------------------===//
 //                         DuckDB
@@ -15824,6 +15836,7 @@ public:
 	//! Returns true if the statistics indicate that the segment can contain values that satisfy that filter
 	virtual FilterPropagateResult CheckStatistics(BaseStatistics &stats) = 0;
 	virtual string ToString(const string &column_name) = 0;
+	string DebugToString();
 	virtual unique_ptr<TableFilter> Copy() const = 0;
 	virtual bool Equals(const TableFilter &other) const {
 		return filter_type != other.filter_type;
@@ -16369,13 +16382,13 @@ public:
 		map.resize(nz);
 	}
 
-	void insert(const string &key, V &value) { // NOLINT: match stl API
-		map.push_back(make_pair(key, std::move(value)));
+	void insert(const string &key, V &&value) { // NOLINT: match stl API
+		map.emplace_back(key, std::move(value));
 		map_idx[key] = map.size() - 1;
 	}
 
-	void insert(const string &key, V &&value) { // NOLINT: match stl API
-		map.push_back(make_pair(key, std::move(value)));
+	void insert(const string &key, const V &value) { // NOLINT: match stl API
+		map.emplace_back(key, value);
 		map_idx[key] = map.size() - 1;
 	}
 
@@ -16407,7 +16420,7 @@ public:
 	V &operator[](const string &key) {
 		if (!contains(key)) {
 			auto v = V();
-			insert(key, v);
+			insert(key, std::move(v));
 		}
 		return map[map_idx[key]].second;
 	}
@@ -18748,6 +18761,8 @@ enum class SecretDisplayType : uint8_t;
 
 enum class SecretPersistType : uint8_t;
 
+enum class SecretSerializationType : uint8_t;
+
 enum class SequenceInfo : uint8_t;
 
 enum class SetOperationType : uint8_t;
@@ -19197,6 +19212,9 @@ const char* EnumUtil::ToChars<SecretDisplayType>(SecretDisplayType value);
 
 template<>
 const char* EnumUtil::ToChars<SecretPersistType>(SecretPersistType value);
+
+template<>
+const char* EnumUtil::ToChars<SecretSerializationType>(SecretSerializationType value);
 
 template<>
 const char* EnumUtil::ToChars<SequenceInfo>(SequenceInfo value);
@@ -19687,6 +19705,9 @@ SecretDisplayType EnumUtil::FromString<SecretDisplayType>(const char *value);
 
 template<>
 SecretPersistType EnumUtil::FromString<SecretPersistType>(const char *value);
+
+template<>
+SecretSerializationType EnumUtil::FromString<SecretSerializationType>(const char *value);
 
 template<>
 SequenceInfo EnumUtil::FromString<SequenceInfo>(const char *value);
@@ -21037,7 +21058,7 @@ private:
 	}
 
 private:
-	//! (optional) callback, called on every succesful entry retrieval
+	//! (optional) callback, called on every successful entry retrieval
 	catalog_entry_callback_t callback = nullptr;
 	ClientContext &context;
 };
@@ -23661,7 +23682,7 @@ typedef struct _duckdb_arrow_array {
 //===--------------------------------------------------------------------===//
 //! Passed to C API extension as parameter to the entrypoint
 struct duckdb_extension_access {
-	//! Indicate that an error has occured
+	//! Indicate that an error has occurred
 	void (*set_error)(duckdb_extension_info info, const char *error);
 	//! Fetch the database from duckdb to register extensions to
 	duckdb_database *(*get_database)(duckdb_extension_info info);
@@ -29701,6 +29722,8 @@ string BitpackingModeToString(const BitpackingMode &mode);
 namespace duckdb {
 
 class BoundIndex;
+class PhysicalOperator;
+class LogicalCreateIndex;
 enum class IndexConstraintType : uint8_t;
 class Expression;
 class TableIOManager;
@@ -29726,7 +29749,19 @@ struct CreateIndexInput {
 	      options(options) {};
 };
 
+struct PlanIndexInput {
+	ClientContext &context;
+	LogicalCreateIndex &op;
+	unique_ptr<PhysicalOperator> &table_scan;
+
+	PlanIndexInput(ClientContext &context_p, LogicalCreateIndex &op_p, unique_ptr<PhysicalOperator> &table_scan_p)
+	    : context(context_p), op(op_p), table_scan(table_scan_p) {
+	}
+};
+
 typedef unique_ptr<BoundIndex> (*index_create_function_t)(CreateIndexInput &input);
+typedef unique_ptr<PhysicalOperator> (*index_plan_function_t)(PlanIndexInput &input);
+
 //! A index "type"
 class IndexType {
 public:
@@ -29734,7 +29769,8 @@ public:
 	string name;
 
 	// Callbacks
-	index_create_function_t create_instance;
+	index_plan_function_t create_plan = nullptr;
+	index_create_function_t create_instance = nullptr;
 };
 
 } // namespace duckdb
@@ -36568,7 +36604,7 @@ public:
 
 	template <bool CHECK_OVERFLOW = true>
 	inline static uhugeint_t Divide(uhugeint_t lhs, uhugeint_t rhs) {
-		// division between two same-size unsigned intergers can only go wrong with division by zero
+		// division between two same-size unsigned integers can only go wrong with division by zero
 		if (rhs == 0) {
 			throw OutOfRangeException("Division of UHUGEINT by zero!");
 		}
