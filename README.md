@@ -1,9 +1,18 @@
 # DuckDB Foreign Data Wrapper for PostgreSQL
 
 This is a foreign data wrapper (FDW) to connect [PostgreSQL](https://www.postgresql.org/)
-to [DuckDB](https://duckdb.org/) database file. This FDW works with PostgreSQL 9.6 ... 16 and works with exact same version of `libduckdb`.
+to [DuckDB](https://duckdb.org/) database files through DuckDB's SQLite compatibility layer. This FDW works with PostgreSQL 9.6 ... 17 and uses DuckDB's built-in SQLite API compatibility.
 
 <img src="https://upload.wikimedia.org/wikipedia/commons/2/29/Postgresql_elephant.svg" align="center" height="100" alt="PostgreSQL"/>	+	<img src="https://user-images.githubusercontent.com/41448637/222924178-7e622cad-fec4-49e6-b8fb-33be4447f17d.png" align="center" height="100" alt="DuckDB"/>
+
+## Architecture Overview
+
+**Important Technical Note**: This FDW uses DuckDB's SQLite compatibility layer rather than direct DuckDB API calls. The implementation leverages DuckDB's ability to act as a drop-in replacement for SQLite, providing:
+
+- SQLite API compatibility (`sqlite3.h`)
+- DuckDB's advanced query optimization and performance
+- Support for DuckDB's rich data types and functions
+- Direct file-based database access
 
 ## Contents
 
@@ -36,15 +45,18 @@ to [DuckDB](https://duckdb.org/) database file. This FDW works with PostgreSQL 9
 
 ### Pushdowning
 
-- *not described*
+- WHERE clauses with operators, functions and operators
+- Aggregate functions (COUNT, SUM, AVG, MIN, MAX)
+- GROUP BY clauses
+- ORDER BY clauses
+- JOIN operations (inner, left, right, full)
+- LIMIT/OFFSET clauses
 
 ### Notes about pushdowning
 
-- *not described*
-
-### Notes about features
-
-Also see [Limitations](#limitations)
+- Pushdown is controlled by DuckDB's query optimizer through the SQLite compatibility layer
+- Complex queries may be partially pushed down depending on DuckDB's capabilities
+- Some PostgreSQL-specific functions may not push down and will be executed locally
 
 ## Supported platforms
 
@@ -56,7 +68,6 @@ Also see [Limitations](#limitations)
 
 There's a `duckdb_fdw` rpm available on Pigsty's PGSQL [yum repository](https://repo.pigsty.cc/repo) for el8 and el9
 
-
 ### Source installation
 
 Prerequisites:
@@ -64,6 +75,7 @@ Prerequisites:
 - `postgresql-server-{version}-dev`
 - `gcc`
 - `make`
+- `curl` (for download script)
 
 #### 1. Download source
 
@@ -72,25 +84,36 @@ git clone https://github.com/alitrack/duckdb_fdw
 cd duckdb_fdw
 ```
 
-#### 2. Download DuckDB library
+#### 2. Download DuckDB library using automated script
 
-For example, we want to compile under Linux AMD64 with DuckDB v1.0.0, just download [libduckdb-linux-amd64.zip](https://github.com/duckdb/duckdb/releases/download/v1.0.0/libduckdb-linux-amd64.zip)
+The project includes an automated download script that fetches the latest DuckDB version:
 
 ```bash
-wget -c https://github.com/duckdb/duckdb/releases/download/v1.0.0/libduckdb-linux-amd64.zip
-unzip -d . libduckdb-linux-amd64.zip
+# Download latest DuckDB library (automatically detects platform)
+./download_libduckdb.sh
 
-# you can also put the libduckdb.so to a directory in LD_LIBRARY_PATH, such as /usr/lib64
-cp libduckdb.so $(pg_config --libdir)
+# Or download specific version manually
+DUCKDB_VERSION=1.3.2
+wget -c https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-linux-amd64.zip
+unzip -d . libduckdb-linux-amd64.zip
+mv libduckdb.so libduckdb.${DUCKDB_VERSION}.so
+cp libduckdb.${DUCKDB_VERSION}.so $(pg_config --libdir)
 ```
 
-Beware that this libduckdb.so is build on ubuntu with higher glibc version, to use `duckdb_fdw` on el8 / el9, you have to compile `[libduckdb-src.zip`](https://github.com/duckdb/duckdb/releases/download/v1.0.0/libduckdb-src.zip) from source
+**Note**: The download script automatically:
+- Detects your platform (Linux/macOS) and architecture
+- Downloads the appropriate DuckDB library
+- Creates a `.duckdb_version` file for build configuration
+- Renames the library with version suffix for compatibility
+
+For Enterprise Linux (RHEL/CentOS 8/9), you may need to compile from source using `libduckdb-src.zip` due to glibc version compatibility.
 
 #### 3. Build and install duckdb_fdw
 
 Add a directory of `pg_config` to PATH and build and install `duckdb_fdw`.
 
 ```sh
+# The .duckdb_version file is automatically created by the download script
 make USE_PGXS=1
 make install USE_PGXS=1
 ```
@@ -252,7 +275,7 @@ SELECT duckdb_execute('duckdb_server'
 
 ## Identifier case handling
 
-PostgreSQL folds identifiers to lower case by default. DuckDB *behaviour not described*. It's important
+PostgreSQL folds identifiers to lower case by default. DuckDB preserves case sensitivity through the SQLite compatibility layer. It's important
 to be aware of potential issues with table and column names.
 
 ## Generated columns
@@ -403,16 +426,16 @@ Testing directory have structure as following:
 
 ```
 +---sql
-    +---11.7
+    +---10.18
     |       filename1.sql
     |       filename2.sql
     | 
-    +---12.12
+    +---11.13
     |       filename1.sql
     |       filename2.sql
     | 
 .................  
-    \---15.0
+    \---14.0
            filename1.sql
            filename2.sql
 ```
@@ -437,7 +460,7 @@ For pull request, please make sure these items below for testing:
 
 ### Source
 
-- https://github.com/pgspider/sqlite_fdw
+- https://github.com/alitrack/duckdb_fdw
 - https://pgxn.org/dist/duckdb_fdw/
  
 Reference FDW realisation, `postgres_fdw`
@@ -460,7 +483,7 @@ Reference FDW realisation, `postgres_fdw`
 
 ## Special thanks
 
-Authors of https://github.com/pgspider/sqlite_fdw
+Authors of https://github.com/pgspider/sqlite_fdw (base implementation)
 
 ## License
 

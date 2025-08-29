@@ -63,3 +63,11 @@ Release/
 *.zip
 postgresql.log
 .vscode/
+
+# DuckDB related files (should be downloaded, not committed)
+duckdb.h
+duckdb.hpp
+libduckdb*.so
+libduckdb*.dylib
+libduckdb*.dll
+CLAUDE.md
