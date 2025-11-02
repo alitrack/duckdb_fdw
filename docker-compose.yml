@@ -4,7 +4,7 @@ services:
             context: .
             args:
                 - POSTGRES_VERSION=17
-                - DUCKDB_VERSION=1.3.2
+                - DUCKDB_VERSION=1.4.1
         ports:
             - "5432:5432"
         volumes:

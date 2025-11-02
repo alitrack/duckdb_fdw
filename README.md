@@ -1,7 +1,7 @@
 # DuckDB Foreign Data Wrapper for PostgreSQL
 
 This is a foreign data wrapper (FDW) to connect [PostgreSQL](https://www.postgresql.org/)
-to [DuckDB](https://duckdb.org/) database files through DuckDB's SQLite compatibility layer. This FDW works with PostgreSQL 9.6 ... 17 and uses DuckDB's built-in SQLite API compatibility.
+to [DuckDB](https://duckdb.org/) database files through DuckDB's SQLite compatibility layer. This FDW works with PostgreSQL 9.6 ... 18 and uses DuckDB's built-in SQLite API compatibility.
 
 <img src="https://upload.wikimedia.org/wikipedia/commons/2/29/Postgresql_elephant.svg" align="center" height="100" alt="PostgreSQL"/>	+	<img src="https://user-images.githubusercontent.com/41448637/222924178-7e622cad-fec4-49e6-b8fb-33be4447f17d.png" align="center" height="100" alt="DuckDB"/>
 
@@ -35,7 +35,7 @@ to [DuckDB](https://duckdb.org/) database files through DuckDB's SQLite compatib
 
 ### Common features
 
-- Transactions  
+- Transactions
 - Support `TRUNCATE` by deparsing into `DELETE` statement without `WHERE` clause
 - Allow control over whether foreign servers keep connections open after transaction completion. This is controlled by `keep_connections` and defaults to on
 - Support list cached connections to foreign servers by using function `duckdb_fdw_get_connections()`
@@ -93,18 +93,15 @@ The project includes an automated download script that fetches the latest DuckDB
 ./download_libduckdb.sh
 
 # Or download specific version manually
-DUCKDB_VERSION=1.3.2
+DUCKDB_VERSION=1.4.1
 wget -c https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-linux-amd64.zip
 unzip -d . libduckdb-linux-amd64.zip
-mv libduckdb.so libduckdb.${DUCKDB_VERSION}.so
-cp libduckdb.${DUCKDB_VERSION}.so $(pg_config --libdir)
 ```
 
 **Note**: The download script automatically:
+
 - Detects your platform (Linux/macOS) and architecture
 - Downloads the appropriate DuckDB library
-- Creates a `.duckdb_version` file for build configuration
-- Renames the library with version suffix for compatibility
 
 For Enterprise Linux (RHEL/CentOS 8/9), you may need to compile from source using `libduckdb-src.zip` due to glibc version compatibility.
 
@@ -134,23 +131,19 @@ make install
 - **database** as *string*, **required**
 
   DuckDB database path.
-
 - **truncatable** as *boolean*, optional, default *false*
 
   Allows foreign tables to be truncated using the `TRUNCATE` command.
-  
 - **keep_connections** as *boolean*, optional, default *false*
-  
+
   Allows to keep connections to DuckDB while there is no SQL operations between PostgreSQL and DuckDB.
-  
 - **batch_size** as *integer*, optional, default *1*
 
   Specifies the number of rows which should be inserted in a single `INSERT` operation. This setting can be overridden for individual tables.
-  
 - **temp_directory** as *string*,  optional, default *NULL*
-  
+
   Specifies the directory to which to write temp files.
-  
+
 ## CREATE USER MAPPING options
 
 There is no user or password conceptions in DuckDB, hence `duckdb_fdw` no need any `CREATE USER MAPPING` command.
@@ -168,30 +161,26 @@ In OS `duckdb_fdw` works as executed code with permissions of user of PostgreSQL
 - **table** as *string*, optional, no default
 
   DuckDB table name. Use if not equal to name of foreign table in PostgreSQL. Also see about [identifier case handling](#identifier-case-handling).
-
 - **truncatable** as *boolean*, optional, default from the same `CREATE SERVER` option
-  
-  See `CREATE SERVER` options section for details.
 
+  See `CREATE SERVER` options section for details.
 - **batch_size** as *integer*, optional, default from the same `CREATE SERVER` option
 
-  See `CREATE SERVER` options section for details.  
-  
+  See `CREATE SERVER` options section for details.
+
 `duckdb_fdw` accepts the following column-level options via the
 `CREATE FOREIGN TABLE` command:
 
 - **column_name** as *string*, optional, no default
 
   This option gives the column name to use for the column on the remote server. Also see about [identifier case handling](#identifier-case-handling).
-
 - **column_type** as *string*, optional, no default
 
   Option to convert INT DuckDB column (epoch Unix Time) to be treated/visualized as TIMESTAMP in PostgreSQL.
-
 - **key** as *boolean*, optional, default *false*
 
   Indicates a column as a part of primary key or unique key of DuckDB table.
-  
+
 ## IMPORT FOREIGN SCHEMA options
 
 `duckdb_fdw` supports [IMPORT FOREIGN SCHEMA](https://www.postgresql.org/docs/current/sql-importforeignschema.html)
@@ -213,13 +202,10 @@ As well as the standard `duckdb_fdw_handler()` and `duckdb_fdw_validator()`
 functions, `duckdb_fdw` provides the following user-callable utility functions:
 
 - SETOF record **duckdb_fdw_get_connections**(server_name text, valid bool)
-
 - bool **duckdb_fdw_disconnect**(text)
 
   Closes connection from PostgreSQL to DuckDB in the current session.
-
 - bool **duckdb_fdw_disconnect_all()**
-
 - **duckdb_fdw_version()**;
 
   Returns standard "version integer" as `major version * 10000 + minor version * 100 + bugfix`.
@@ -244,7 +230,7 @@ You are best advised to use this function outside multi-statement transactions.
 It is very useful to use command that duckdb_fdw does not support, for example,
 
 - add more table or view to DuckDB directly.
-  
+
 ```sql
 SELECT duckdb_execute('duckdb_server'
 ,'create or replace view iris_parquet  as select * from parquet_scan(''temp/iris.parquet'');');
@@ -265,7 +251,7 @@ duckdb_server INTO duckdb;
 
 - run Copy command on Foreign table
 
-```sql  
+```sql
 SELECT duckdb_execute('duckdb_server'
 ,'CREATE TABLE test (a INTEGER, b INTEGER, c VARCHAR(10));
 ');
@@ -418,8 +404,8 @@ For the table from previous examples
 
 ## Tests
 
-All tests are based on `make check`, main testing script see in [test.sh](test.sh) file. We don't profess a specific environment. You can use any POSIX-compliant system. 
-Testing scripts from PosgreSQL-side is multi-versioned. Hence, you need install PostgreSQL packages in versions listed in [sql](sql) directory. 
+All tests are based on `make check`, main testing script see in [test.sh](test.sh) file. We don't profess a specific environment. You can use any POSIX-compliant system.
+Testing scripts from PosgreSQL-side is multi-versioned. Hence, you need install PostgreSQL packages in versions listed in [sql](sql) directory.
 PostgreSQL server locale for messages in tests must be *english*. About base testing mechanism see in [PostgreSQL documentation](https://www.postgresql.org/docs/current/regress-run.html).
 
 Testing directory have structure as following:
@@ -441,7 +427,7 @@ Testing directory have structure as following:
 ```
 
 The test cases for each version are based on the test of corresponding version of PostgreSQL.
-You can execute test by `test.sh` directly. 
+You can execute test by `test.sh` directly.
 The version of PostgreSQL is detected automatically by `$(VERSION)` variable in Makefile.
 
 ## Contributing
@@ -462,7 +448,7 @@ For pull request, please make sure these items below for testing:
 
 - https://github.com/alitrack/duckdb_fdw
 - https://pgxn.org/dist/duckdb_fdw/
- 
+
 Reference FDW realisation, `postgres_fdw`
 
 - https://git.postgresql.org/gitweb/?p=postgresql.git;a=tree;f=contrib/postgres_fdw;hb=HEAD

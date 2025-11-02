@@ -44,8 +44,7 @@ VERSION=$(get_latest_version)
 # Remove 'v' prefix from version for filename
 DUCKDB_VERSION=${VERSION#v}
 
-# Save version information to a file that can be sourced by make
-echo "DUCKDB_VERSION=$DUCKDB_VERSION" > .duckdb_version
+
 
 # Construct download URL
 DOWNLOAD_URL="https://github.com/duckdb/duckdb/releases/download/${VERSION}/libduckdb-${PLATFORM}-${ARCH}.zip"
@@ -57,13 +56,5 @@ echo "URL: ${DOWNLOAD_URL}"
 curl -L -o duckdb-temp.zip "${DOWNLOAD_URL}"
 unzip -o duckdb-temp.zip
 
-
-# Rename library file with version number
-mv "libduckdb.${LIB_EXT}" "libduckdb.${DUCKDB_VERSION}.${LIB_EXT}"
-
 rm duckdb-temp.zip
-
-echo "Successfully downloaded and renamed library files:"
-
-echo "- Version file: libduckdb*${DUCKDB_VERSION}*"
 

@@ -9,22 +9,12 @@
 #
 ##########################################################################
 
-# Check if DUCKDB_VERSION is defined
-ifeq ($(DUCKDB_VERSION),)
-    # Try to read from .duckdb_version file
-    -include .duckdb_version
-
-    # If still not defined, try to get from environment
-    ifndef DUCKDB_VERSION
-        $(error DUCKDB_VERSION is not set. Please set it using: make DUCKDB_VERSION=x.x.x or create a .duckdb_version file)
-    endif
-endif
 
 MODULE_big = duckdb_fdw
 OBJS = connection.o option.o deparse.o sqlite_query.o duckdb_fdw.o sqlite3_api_wrapper.o
 
 EXTENSION = duckdb_fdw
-DATA = duckdb_fdw--1.0.0.sql duckdb_fdw--1.0.0--1.1.2.sql duckdb_fdw--1.1.2--1.1.3.sql duckdb_fdw--1.1.3--1.3.2.sql
+DATA = duckdb_fdw--1.0.0.sql duckdb_fdw--1.0.0--1.1.2.sql duckdb_fdw--1.1.2--1.1.3.sql duckdb_fdw--1.1.3--1.3.2.sql duckdb_fdw--1.3.2--1.4.1.sql
 
 REGRESS = extra/duckdb_fdw_post extra/float4 extra/float8 extra/int4 extra/int8 extra/numeric extra/join extra/limit extra/aggregates extra/prepare extra/select_having extra/select extra/insert extra/update extra/timestamp duckdb_fdw type aggregate selectfunc 
 
@@ -53,7 +43,8 @@ ifeq ($(detected_OS),Linux)
     endif
 endif
 
-SHLIB_LINK := -L. -lduckdb.$(DUCKDB_VERSION) -lstdc++
+SHLIB_LINK := -L. -lduckdb -lstdc++
+
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
@@ -64,8 +55,8 @@ include $(PGXS)
 ifndef MAJORVERSION
 MAJORVERSION := $(basename $(VERSION))
 endif
-ifeq (,$(findstring $(MAJORVERSION), 10 11 12 13 14 15 16 17))
-$(error PostgreSQL 10, 11, 12, 13, 14, 15, 16 or 17 is required to compile this extension)
+ifeq (,$(findstring $(MAJORVERSION), 10 11 12 13 14 15 16 17 18))
+$(error PostgreSQL 10, 11, 12, 13, 14, 15, 16, 17 or 18 is required to compile this extension)
 endif
 
 else
@@ -74,6 +65,8 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
+
+SHLIB_LINK += -Wl,-rpath,$(DESTDIR)$(PG_LIB)
 
 ifdef REGRESS_PREFIX
 REGRESS_PREFIX_SUB = $(REGRESS_PREFIX)
@@ -86,11 +79,11 @@ $(shell mkdir -p results/$(REGRESS_PREFIX_SUB)/extra)
 
 
 install-duckdb:  $(shlib)
-	$(install_bin) -m 755 libduckdb.$(DUCKDB_VERSION)$(DLSUFFIX) $(DESTDIR)$(PG_LIB)
+	$(install_bin) -m 755 libduckdb$(DLSUFFIX) $(DESTDIR)$(PG_LIB)
 
 install: install-duckdb
 
 uninstall-duckdb:
-	rm -f $(DESTDIR)$(PG_LIB)/libduckdb.$(DUCKDB_VERSION)$(DLSUFFIX)
+	rm -f $(DESTDIR)$(PG_LIB)/libduckdb$(DLSUFFIX)
 
 uninstall: uninstall-duckdb

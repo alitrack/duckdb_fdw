@@ -3410,6 +3410,7 @@ sqlite_append_order_by_clause(List *pathkeys, bool has_final_sort, deparse_expr_
 	{
 		PathKey    *pathkey = lfirst(lcell);
 		Expr	   *em_expr;
+		bool 		compare_it;
 		int			sqliteVersion = sqlite3_libversion_number();
 
 		if (has_final_sort)
@@ -3430,10 +3431,13 @@ sqlite_append_order_by_clause(List *pathkeys, bool has_final_sort, deparse_expr_
 
 		appendStringInfoString(buf, delim);
 		sqlite_deparse_expr(em_expr, context);
-		if (pathkey->pk_strategy == BTLessStrategyNumber)
-			appendStringInfoString(buf, " ASC");
-		else
-			appendStringInfoString(buf, " DESC");
+
+#if PG_VERSION_NUM >= 180000
+		compare_it = (pathkey->pk_cmptype == COMPARE_LT);
+#else
+		compare_it = (pathkey->pk_strategy == BTLessStrategyNumber);
+#endif
+		appendStringInfoString(buf, compare_it ? " ASC" : " DESC");
 
 		/*
 		 * In SQLITE3 Release v3.30.0 (2019-10-04) NULLS FIRST/LAST is
@@ -3454,10 +3458,10 @@ sqlite_append_order_by_clause(List *pathkeys, bool has_final_sort, deparse_expr_
 			 * If we need a different behaviour than SQLite default...we show
 			 * warning message because NULLS FIRST/LAST is not implemented in
 			 * this SQLite version.
-			 */
-			if (!pathkey->pk_nulls_first && pathkey->pk_strategy == BTLessStrategyNumber)
+			 */				 
+			if (!pathkey->pk_nulls_first && compare_it)
 				elog(WARNING, "Current Sqlite Version (%d) does not support NULLS LAST for ORDER BY ASC, degraded emitted query to ORDER BY ASC NULLS FIRST (default sqlite behaviour).", sqliteVersion);
-			else if (pathkey->pk_nulls_first && pathkey->pk_strategy != BTLessStrategyNumber)
+			else if (pathkey->pk_nulls_first && !compare_it)
 				elog(WARNING, "Current Sqlite Version (%d) does not support NULLS FIRST for ORDER BY DESC, degraded emitted query to ORDER BY DESC NULLS LAST (default sqlite behaviour).", sqliteVersion);
 		}
 

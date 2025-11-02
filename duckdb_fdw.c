@@ -58,6 +58,11 @@
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/explain.h"
+#if PG_VERSION_NUM >= 180000
+#include "commands/explain_format.h"
+#include "commands/explain_state.h"
+#include "nodes/execnodes.h"
+#endif
 #include "commands/vacuum.h"
 #include "storage/ipc.h"
 #include "miscadmin.h"
@@ -781,6 +786,9 @@ sqlite_add_paths_with_pathkeys_for_rel(PlannerInfo *root, RelOptInfo *rel, List 
 							  create_foreignscan_path(root, rel,
 													  NULL,
 													  rows,
+#if PG_VERSION_NUM >= 180000 // # of disabled_nodes added in PG 18
+			                            0,
+#endif														  
 													  startup_cost,
 													  total_cost,
 													  useful_pathkeys,
@@ -803,6 +811,9 @@ sqlite_add_paths_with_pathkeys_for_rel(PlannerInfo *root, RelOptInfo *rel, List 
 #endif
 													   NULL,
 													   rows,
+#if PG_VERSION_NUM >= 180000 // # of disabled_nodes added in PG 18
+			                            0,
+#endif														   
 													   startup_cost,
 													   total_cost,
 													   useful_pathkeys,
@@ -897,6 +908,9 @@ sqliteGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid
 												  NULL, /* default pathtarget */
 #endif
 												  baserel->rows,
+#if PG_VERSION_NUM >= 180000 // # of disabled_nodes added in PG 18
+			                            0,
+#endif													  
 												  startup_cost,
 												  total_cost,
 												  NIL, /* no pathkeys */
@@ -1084,6 +1098,9 @@ sqliteGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid
 		path = create_foreignscan_path(root, baserel,
 									   NULL, /* default pathtarget */
 									   rows,
+#if PG_VERSION_NUM >= 180000 // # of disabled_nodes added in PG 18
+			                            0,
+#endif										   
 									   startup_cost,
 									   total_cost,
 									   NIL, /* no pathkeys */
@@ -3431,6 +3448,18 @@ sqlite_adjust_foreign_grouping_path_cost(PlannerInfo *root,
 	{
 		Path sort_path; /* dummy for result of cost_sort */
 
+#if PG_VERSION_NUM >= 180000
+		cost_sort(&sort_path,
+				  root,
+				  pathkeys,
+				  0, /* input_disabled_nodes */
+				  *p_startup_cost + *p_run_cost,
+				  retrieved_rows,
+				  width,
+				  0.0,
+				  work_mem,
+				  limit_tuples);
+#else
 		cost_sort(&sort_path,
 				  root,
 				  pathkeys,
@@ -3440,6 +3469,7 @@ sqlite_adjust_foreign_grouping_path_cost(PlannerInfo *root,
 				  0.0,
 				  work_mem,
 				  limit_tuples);
+#endif
 
 		*p_startup_cost = sort_path.startup_cost;
 		*p_run_cost = sort_path.total_cost - sort_path.startup_cost;
@@ -3616,6 +3646,9 @@ sqliteGetForeignJoinPaths(PlannerInfo *root,
 										joinrel,
 										NULL, /* default pathtarget */
 										rows,
+#if PG_VERSION_NUM >= 180000 // # of disabled_nodes added in PG 18
+			                            0,
+#endif											
 										startup_cost,
 										total_cost,
 										NIL, /* no pathkeys */
@@ -3625,7 +3658,6 @@ sqliteGetForeignJoinPaths(PlannerInfo *root,
 										extra->restrictlist,
 #endif
 										NIL); /* no fdw_private */
-
 	/* Add generated path into joinrel by add_path(). */
 	add_path(joinrel, (Path *)joinpath);
 
@@ -4057,6 +4089,9 @@ sqlite_add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 										  grouped_rel,
 										  grouped_rel->reltarget,
 										  rows,
+#if PG_VERSION_NUM >= 180000 // # of disabled_nodes added in PG 18
+			                            0,
+#endif										  										  
 										  startup_cost,
 										  total_cost,
 										  NIL, /* no pathkeys */
@@ -4210,6 +4245,9 @@ sqlite_add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
 											 input_rel,
 											 root->upper_targets[UPPERREL_ORDERED],
 											 rows,
+#if PG_VERSION_NUM >= 180000 // # of disabled_nodes added in PG 18
+			                            0,
+#endif										  											 
 											 startup_cost,
 											 total_cost,
 											 root->sort_pathkeys,
@@ -4414,6 +4452,9 @@ sqlite_add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 										   input_rel,
 										   root->upper_targets[UPPERREL_FINAL],
 										   rows,
+#if PG_VERSION_NUM >= 180000 // # of disabled_nodes added in PG 18
+			                            0,
+#endif										   
 										   startup_cost,
 										   total_cost,
 										   pathkeys,
