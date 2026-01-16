@@ -58,6 +58,7 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 	
 	node->fdw_state = (void *)festate;
 	festate->tupdesc = RelationGetDescr(node->ss.ss_currentRelation);
+    /* Essential: Initialize metadata for all columns for BuildTupleFromCStrings */
 	festate->attinmeta = TupleDescGetAttInMetadata(festate->tupdesc);
 
     rte = exec_rt_fetch(fsplan->scan.scanrelid, estate);
@@ -81,29 +82,52 @@ duckdbIterateForeignScan(ForeignScanState *node)
 	TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
     int i;
     ListCell *lc;
+    char **values;
+    HeapTuple tuple;
 
 	ExecClearTuple(slot);
 
     if (festate->rowidx >= festate->row_count)
         return slot;
 
+    /* 
+     * Robust Architecture:
+     * 1. Allocate an array of C-strings for ALL columns in the table.
+     *    Initialize to NULL (implies NULL value for un-retrieved columns).
+     */
+    values = (char **) palloc0(festate->tupdesc->natts * sizeof(char *));
+
+    /* 
+     * 2. Fill in the values for the columns we actually retrieved from DuckDB.
+     */
     i = 0;
     foreach(lc, festate->retrieved_attrs)
     {
-        int attnum = lfirst_int(lc) - 1;
-        Oid pgtype = festate->tupdesc->attrs[attnum].atttypid;
-        int32 pgtypmod = festate->tupdesc->attrs[attnum].atttypmod;
+        /* attnum_pg is 1-based */
+        int attnum_pg = lfirst_int(lc);
+        int attnum_idx = attnum_pg - 1;
+        Oid pgtype = festate->tupdesc->attrs[attnum_idx].atttypid;
+
+        /* Extract safe, formatted C-string (handles [] -> {}) */
+        values[attnum_idx] = duckdb_extract_as_cstring(&festate->res, i, festate->rowidx, pgtype);
         
-        slot->tts_values[attnum] = duckdb_convert_to_pg(pgtype, pgtypmod, &festate->res, i, festate->rowidx, festate->attinmeta, attnum);
-        
-        if (duckdb_value_is_null(&festate->res, i, festate->rowidx))
-             slot->tts_isnull[attnum] = true;
-        else
-             slot->tts_isnull[attnum] = false;
         i++;
     }
 
-    ExecStoreVirtualTuple(slot);
+    /*
+     * 3. Let Postgres core build the tuple. 
+     *    This handles all parsing, memory alignment, and error checking safely.
+     */
+    tuple = BuildTupleFromCStrings(festate->attinmeta, values);
+
+    /*
+     * 4. Store the heap tuple in the slot.
+     *    'false' means the slot usually doesn't own the tuple memory, 
+     *    but since we allocated it in the short-lived PerTupleContext, 
+     *    it will be cleaned up automatically anyway.
+     */
+    ExecStoreHeapTuple(tuple, slot, false);
+
     festate->rowidx++;
 	return slot;
 }
