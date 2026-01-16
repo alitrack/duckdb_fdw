@@ -158,6 +158,10 @@ Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
 	fdwroutine->IterateForeignScan = duckdbIterateForeignScan;
 	fdwroutine->ReScanForeignScan = duckdbReScanForeignScan;
 	fdwroutine->EndForeignScan = duckdbEndForeignScan;
+    
+    /* NEW: Support for IMPORT FOREIGN SCHEMA */
+    fdwroutine->ImportForeignSchema = duckdb_import_foreign_schema;
+
 	PG_RETURN_POINTER(fdwroutine);
 }
 
