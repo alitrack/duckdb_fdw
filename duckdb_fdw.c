@@ -9,6 +9,8 @@
 #include "utils/builtins.h"
 #include "utils/rel.h"
 #include "catalog/pg_type.h"
+#include "optimizer/clauses.h"
+#include "optimizer/restrictinfo.h"
 
 PG_MODULE_MAGIC;
 
@@ -17,6 +19,11 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
 {
 	DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *)palloc0(sizeof(DuckDBFdwRelationInfo));
 	baserel->fdw_private = (void *)fpinfo;
+    
+    /* Classification of conditions: Remote vs Local */
+    duckdb_classify_conditions(root, baserel, baserel->baserestrictinfo,
+                                &fpinfo->remote_conds, &fpinfo->local_conds);
+                                
     pull_varattnos((Node *) baserel->reltarget->exprs, baserel->relid, &fpinfo->attrs_used);
 	baserel->rows = 1000;
 }
@@ -38,13 +45,19 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
 	List *retrieved_attrs = NIL;
     List *params_list = NIL;
     List *deparse_tlist;
+    DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *) baserel->fdw_private;
 
 	initStringInfo(&sql);
     deparse_tlist = duckdb_build_tlist_to_deparse(baserel);
-	duckdb_deparse_select_stmt_for_rel(&sql, root, baserel, deparse_tlist, NIL, NIL, false, false, false, &retrieved_attrs, &params_list);
+	duckdb_deparse_select_stmt_for_rel(&sql, root, baserel, deparse_tlist, fpinfo->remote_conds, NIL, false, false, false, &retrieved_attrs, &params_list);
 
 	fdw_private = list_make2(makeString(sql.data), retrieved_attrs);
-	return make_foreignscan(tlist, scan_clauses, baserel->relid, NIL, fdw_private, NIL, NIL, outer_plan);
+    
+    /* 
+     * scan_clauses contains both remote and local conditions in RestrictInfo format.
+     * We must pass only local conditions to make_foreignscan for local evaluation.
+     */
+	return make_foreignscan(tlist, extract_actual_clauses(fpinfo->local_conds, false), baserel->relid, NIL, fdw_private, NIL, NIL, outer_plan);
 }
 
 static void
@@ -174,6 +187,27 @@ Datum duckdb_execute(PG_FUNCTION_ARGS) {
     char *query = text_to_cstring(PG_GETARG_TEXT_PP(1));
     duckdb_connection conn = duckdb_get_connection(GetForeignServerByName(servername, false), false);
     duckdb_do_sql_command(conn, query, NOTICE);
+    PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(duckdb_create_s3_secret);
+Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS) {
+    char *servername = NameStr(*PG_GETARG_NAME(0));
+    char *secret_name = text_to_cstring(PG_GETARG_TEXT_PP(1));
+    char *key_id = text_to_cstring(PG_GETARG_TEXT_PP(2));
+    char *secret = text_to_cstring(PG_GETARG_TEXT_PP(3));
+    char *region = PG_ARGISNULL(4) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(4));
+    
+    duckdb_connection conn = duckdb_get_connection(GetForeignServerByName(servername, false), false);
+    StringInfoData sql;
+    initStringInfo(&sql);
+    
+    appendStringInfo(&sql, "CREATE OR REPLACE SECRET %s (TYPE S3, KEY_ID '%s', SECRET '%s'", 
+                     quote_identifier(secret_name), key_id, secret);
+    if (region) appendStringInfo(&sql, ", REGION '%s'", region);
+    appendStringInfoString(&sql, ");");
+    
+    duckdb_do_sql_command(conn, sql.data, NOTICE);
     PG_RETURN_VOID();
 }
 

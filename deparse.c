@@ -203,9 +203,19 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 	 * DuckDB 特化：支持数据湖直连
 	 * 如果表名以 .parquet 结尾，或者定义了 path 选项，生成 read_parquet
 	 */
-	if (strstr(relname, ".parquet") != NULL)
+	if (strstr(relname, ".parquet") != NULL && strstr(relname, "read_parquet") == NULL)
 	{
 		appendStringInfo(buf, "read_parquet('%s')", relname);
+	}
+    else if (strstr(relname, "read_parquet") != NULL || strstr(relname, "read_csv") != NULL)
+    {
+        /* Already a function call, pass as is */
+        appendStringInfo(buf, "%s", relname);
+    }
+	else if (strchr(relname, '.') != NULL || strchr(relname, '"') != NULL)
+	{
+		/* If it contains a dot or quote, assume it's already qualified or quoted */
+		appendStringInfo(buf, "%s", relname);
 	}
 	else
 	{

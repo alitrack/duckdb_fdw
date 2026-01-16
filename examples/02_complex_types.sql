@@ -1,17 +1,18 @@
--- Ensure Setup
-CREATE SERVER IF NOT EXISTS duck_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
+-- Clean environment
+DROP EXTENSION IF EXISTS duckdb_fdw CASCADE;
+CREATE EXTENSION duckdb_fdw;
 
--- 1. Create Data with Array and JSON in DuckDB
-SELECT duckdb_execute('duck_srv', 'CREATE OR REPLACE TABLE complex_demo AS 
-    SELECT 
-        [1, 2, 3] as my_array, 
-        CAST(''{"tag": "powerful", "speed": "vectorized"}'' AS JSON) as my_json');
+CREATE SERVER duck_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
 
--- 2. Map to Foreign Table
-CREATE FOREIGN TABLE complex_demo (
-    my_array INT4[],
-    my_json JSONB
-) SERVER duck_srv OPTIONS (table 'complex_demo');
+-- Setup Complex Data
+SELECT duckdb_execute('duck_srv', 'CREATE TABLE complex_test (id INT, vec DOUBLE[], info JSON)');
+SELECT duckdb_execute('duck_srv', 'INSERT INTO complex_test VALUES (1, [1.1, 2.2, 3.3], ''{"model": "deepseek"}'')');
 
--- 3. Query - See the power of new conversion layer
-SELECT * FROM complex_demo;
+-- Map to Postgres
+CREATE FOREIGN TABLE complex_test (
+    id INT,
+    vec text[],
+    info jsonb
+) SERVER duck_srv OPTIONS (table 'complex_test');
+
+SELECT * FROM complex_test;

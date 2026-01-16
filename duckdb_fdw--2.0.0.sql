@@ -22,5 +22,9 @@ CREATE FUNCTION duckdb_execute(server name, statement text)
 RETURNS void STRICT
 AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION duckdb_create_s3_secret(server name, secret_name text, key_id text, secret text, region text DEFAULT NULL)
+RETURNS void
+AS 'MODULE_PATHNAME' LANGUAGE C;
+
 COMMENT ON FUNCTION duckdb_execute(name, text)
 IS 'executes an arbitrary SQL statement on DuckDB';

@@ -3,216 +3,149 @@
 #include "duckdb.h"
 
 #include "access/xact.h"
-#include "commands/defrem.h"
-#include "commands/tablecmds.h"
+#include "executor/spi.h"
 #include "catalog/pg_type.h"
-#include "catalog/pg_namespace.h"
 #include "catalog/pg_foreign_server.h"
-#include "nodes/makefuncs.h"
-#include "parser/parse_type.h"
+#include "commands/defrem.h"
 #include "utils/builtins.h"
-#include "utils/lsyscache.h"
-#include "utils/syscache.h"
 
-/*
- * Mapping from DuckDB type names to PostgreSQL type OIDs/Names.
- */
-static TypeName *
-duckdb_map_type(const char *duck_type)
+static const char *
+duckdb_map_type_name(const char *duck_type)
 {
-    /* Basic Numeric Types */
-    if (strcmp(duck_type, "BOOLEAN") == 0) return makeTypeName("bool");
-    if (strcmp(duck_type, "BIGINT") == 0) return makeTypeName("int8");
-    if (strcmp(duck_type, "HUGEINT") == 0) return makeTypeName("numeric");
-    if (strcmp(duck_type, "INTEGER") == 0) return makeTypeName("int4");
-    if (strcmp(duck_type, "SMALLINT") == 0) return makeTypeName("int2");
-    if (strcmp(duck_type, "TINYINT") == 0) return makeTypeName("int2");
-    if (strcmp(duck_type, "FLOAT") == 0) return makeTypeName("float4");
-    if (strcmp(duck_type, "DOUBLE") == 0) return makeTypeName("float8");
-    
-    /* Text/String Types */
-    if (strcmp(duck_type, "VARCHAR") == 0) return makeTypeName("text");
-    if (strcmp(duck_type, "CHAR") == 0) return makeTypeName("text");
-    if (strcmp(duck_type, "BLOB") == 0) return makeTypeName("bytea");
-    if (strcmp(duck_type, "UUID") == 0) return makeTypeName("uuid");
-    if (strcmp(duck_type, "JSON") == 0) return makeTypeName("jsonb");
-
-    /* Date/Time */
-    if (strcmp(duck_type, "DATE") == 0) return makeTypeName("date");
-    if (strcmp(duck_type, "TIMESTAMP") == 0) return makeTypeName("timestamp");
-    if (strcmp(duck_type, "TIMESTAMPTZ") == 0) return makeTypeName("timestamptz");
-    if (strcmp(duck_type, "TIME") == 0) return makeTypeName("time");
-
-    /* Arrays / Lists */
-    if (strstr(duck_type, "DOUBLE[]") || strstr(duck_type, "FLOAT[]"))
-    {
-        TypeName *tn = makeTypeName("float8");
-        tn->arrayBounds = list_make1(makeInteger(-1));
-        return tn;
-    }
-    
-    if (strstr(duck_type, "[]"))
-    {
-        TypeName *tn = makeTypeName("text");
-        tn->arrayBounds = list_make1(makeInteger(-1));
-        return tn;
-    }
-
-    /* Fallback */
-    return makeTypeName("text");
+    if (strcmp(duck_type, "BOOLEAN") == 0) return "bool";
+    if (strcmp(duck_type, "BIGINT") == 0) return "int8";
+    if (strcmp(duck_type, "HUGEINT") == 0) return "numeric";
+    if (strcmp(duck_type, "INTEGER") == 0) return "int4";
+    if (strcmp(duck_type, "SMALLINT") == 0) return "int2";
+    if (strcmp(duck_type, "FLOAT") == 0) return "float4";
+    if (strcmp(duck_type, "DOUBLE") == 0) return "float8";
+    if (strcmp(duck_type, "DATE") == 0) return "date";
+    if (strcmp(duck_type, "TIMESTAMP") == 0) return "timestamp";
+    if (strcmp(duck_type, "JSON") == 0) return "jsonb";
+    if (strcmp(duck_type, "VARCHAR") == 0) return "text";
+    if (strstr(duck_type, "DECIMAL")) return "numeric";
+    if (strstr(duck_type, "[]")) return "text[]";
+    return "text";
 }
 
-/*
- * ImportForeignSchema handler.
- */
 List *
 duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 {
-    List *commands = NIL;
-    ForeignServer *server;
-    duckdb_connection conn;
+    ForeignServer *server = GetForeignServer(serverOid);
+    duckdb_connection conn = duckdb_get_connection(server, false);
     duckdb_result res;
     StringInfoData query;
-    bool is_file_import = false;
-    char *remote_schema = stmt->remote_schema;
+    bool is_file = false;
 
-    /* Check if remote_schema looks like a file path */
-    if (strstr(remote_schema, ".parquet") || 
-        strstr(remote_schema, ".csv") || 
-        strstr(remote_schema, ".json") ||
-        strstr(remote_schema, "s3://") ||
-        strstr(remote_schema, "http://") ||
-        strstr(remote_schema, "/"))
-    {
-        is_file_import = true;
-    }
+    if (strstr(stmt->remote_schema, ".parquet") || strstr(stmt->remote_schema, "/"))
+        is_file = true;
 
-    server = GetForeignServer(serverOid);
-    conn = duckdb_get_connection(server, false);
+    if (SPI_connect() != SPI_OK_CONNECT)
+        elog(ERROR, "SPI_connect failed");
 
     initStringInfo(&query);
-
-    if (is_file_import)
+    if (is_file)
     {
+        StringInfoData ddl;
         char *tablename;
-        char *last_slash = strrchr(remote_schema, '/');
-        char *filename = last_slash ? last_slash + 1 : remote_schema;
-        idx_t row_count;
-        List *columns = NIL;
-        CreateForeignTableStmt *create;
-        char *table_opt_val;
+        char *last_slash = strrchr(stmt->remote_schema, '/');
+        char *filename = last_slash ? last_slash + 1 : stmt->remote_schema;
 
         tablename = pstrdup(filename);
         char *dot = strrchr(tablename, '.');
         if (dot) *dot = '\0';
 
-        if (strstr(remote_schema, ".csv"))
-            appendStringInfo(&query, "DESCRIBE SELECT * FROM read_csv_auto('%s')", remote_schema);
-        else if (strstr(remote_schema, ".json"))
-            appendStringInfo(&query, "DESCRIBE SELECT * FROM read_json_auto('%s')", remote_schema);
-        else
-            appendStringInfo(&query, "DESCRIBE SELECT * FROM read_parquet('%s')", remote_schema);
+        initStringInfo(&ddl);
+        appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (", 
+                         quote_identifier(stmt->local_schema),
+                         quote_identifier(tablename));
 
+        appendStringInfo(&query, "DESCRIBE SELECT * FROM read_parquet('%s')", stmt->remote_schema);
         if (duckdb_query(conn, query.data, &res) == DuckDBError)
-        {
-            const char *err = duckdb_result_error(&res);
-            ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
-                            errmsg("DuckDB DESCRIBE failed: %s", err ? err : "unknown error")));
-        }
+            elog(ERROR, "DuckDB: %s", duckdb_result_error(&res));
 
-        row_count = duckdb_row_count(&res);
-        for (idx_t i = 0; i < row_count; i++)
+        for (idx_t i = 0; i < duckdb_row_count(&res); i++)
         {
-            char *col_name = duckdb_value_varchar(&res, 0, i);
-            char *col_type = duckdb_value_varchar(&res, 1, i);
-            
-            ColumnDef *col = makeNode(ColumnDef);
-            col->colname = pstrdup(col_name);
-            col->typeName = duckdb_map_type(col_type);
-            columns = lappend(columns, col);
-
-            duckdb_free(col_name);
-            duckdb_free(col_type);
+            char *cname = duckdb_value_varchar(&res, 0, i);
+            char *ctype = duckdb_value_varchar(&res, 1, i);
+            appendStringInfo(&ddl, "%s %s%s", quote_identifier(cname), duckdb_map_type_name(ctype), (i < duckdb_row_count(&res)-1) ? ", " : "");
+            duckdb_free(cname); duckdb_free(ctype);
         }
         duckdb_destroy_result(&res);
 
-        create = makeNode(CreateForeignTableStmt);
-        create->base.relation = makeRangeVar(stmt->local_schema, tablename, -1);
-        create->base.tableElts = columns;
-        create->servername = server->servername;
-        
-        if (strstr(remote_schema, ".csv"))
-            table_opt_val = psprintf("read_csv_auto('%s')", remote_schema);
-        else if (strstr(remote_schema, ".json"))
-            table_opt_val = psprintf("read_json_auto('%s')", remote_schema);
-        else
-            table_opt_val = psprintf("read_parquet('%s')", remote_schema);
+        appendStringInfo(&ddl, ") SERVER %s OPTIONS (table '%s')", 
+                         quote_identifier(server->servername), stmt->remote_schema);
 
-        create->options = list_make1(makeDefElem("table", (Node *)makeString(table_opt_val), -1));
-        commands = lappend(commands, create);
+        if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
+            elog(ERROR, "Failed to create foreign table via SPI: %s", ddl.data);
     }
     else
     {
-        idx_t row_count;
-        char *current_table = NULL;
-        List *current_columns = NIL;
-
+        /* 
+         * Use duckdb_columns() instead of information_schema to support attached catalogs.
+         * We match remote_schema against either database_name or schema_name.
+         */
         appendStringInfo(&query, 
-            "SELECT table_name, column_name, data_type "
-            "FROM information_schema.columns "
-            "WHERE table_schema = '%s' "
-            "ORDER BY table_name, ordinal_position", 
-            remote_schema);
+            "SELECT database_name, schema_name, table_name, column_name, data_type "
+            "FROM duckdb_columns() "
+            "WHERE database_name = '%s' OR schema_name = '%s' "
+            "ORDER BY database_name, schema_name, table_name, column_index", 
+            stmt->remote_schema, stmt->remote_schema);
 
         if (duckdb_query(conn, query.data, &res) == DuckDBError)
-        {
-            const char *err = duckdb_result_error(&res);
-            ereport(ERROR, (errmsg("Failed to query DuckDB schema '%s': %s", remote_schema, err ? err : "unknown")));
-        }
+            elog(ERROR, "DuckDB: %s", duckdb_result_error(&res));
 
-        row_count = duckdb_row_count(&res);
-        for (idx_t i = 0; i < row_count; i++)
-        {
-            char *table_name = duckdb_value_varchar(&res, 0, i);
-            char *col_name = duckdb_value_varchar(&res, 1, i);
-            char *col_type = duckdb_value_varchar(&res, 2, i);
+        char *curr_db = NULL;
+        char *curr_sch = NULL;
+        char *curr_tab = NULL;
+        StringInfoData ddl;
+        initStringInfo(&ddl);
+        bool first_col = true;
 
-            if (current_table == NULL || strcmp(current_table, table_name) != 0)
+        for (idx_t i = 0; i < duckdb_row_count(&res); i++)
+        {
+            char *dbname = duckdb_value_varchar(&res, 0, i);
+            char *schname = duckdb_value_varchar(&res, 1, i);
+            char *tname = duckdb_value_varchar(&res, 2, i);
+            char *cname = duckdb_value_varchar(&res, 3, i);
+            char *ctype = duckdb_value_varchar(&res, 4, i);
+
+            if (curr_tab == NULL || strcmp(curr_tab, tname) != 0 || strcmp(curr_sch, schname) != 0 || strcmp(curr_db, dbname) != 0)
             {
-                if (current_table)
+                if (curr_tab)
                 {
-                    CreateForeignTableStmt *create = makeNode(CreateForeignTableStmt);
-                    create->base.relation = makeRangeVar(stmt->local_schema, current_table, -1);
-                    create->base.tableElts = current_columns;
-                    create->servername = server->servername;
-                    create->options = list_make1(makeDefElem("table", (Node *)makeString(pstrdup(current_table)), -1));
-                    commands = lappend(commands, create);
+                    appendStringInfo(&ddl, ") SERVER %s OPTIONS (table '%s.%s.%s')", 
+                        quote_identifier(server->servername), curr_db, curr_sch, curr_tab);
+                    if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
+                        elog(ERROR, "SPI failed: %s", ddl.data);
                 }
-                current_table = pstrdup(table_name);
-                current_columns = NIL;
+                resetStringInfo(&ddl);
+                appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (", 
+                    quote_identifier(stmt->local_schema), quote_identifier(tname));
+                curr_db = pstrdup(dbname);
+                curr_sch = pstrdup(schname);
+                curr_tab = pstrdup(tname);
+                first_col = true;
             }
+            
+            if (!first_col) appendStringInfoString(&ddl, ", ");
+            appendStringInfo(&ddl, "%s %s", quote_identifier(cname), duckdb_map_type_name(ctype));
+            first_col = false;
 
-            ColumnDef *col = makeNode(ColumnDef);
-            col->colname = pstrdup(col_name);
-            col->typeName = duckdb_map_type(col_type);
-            current_columns = lappend(current_columns, col);
-
-            duckdb_free(table_name);
-            duckdb_free(col_name);
-            duckdb_free(col_type);
+            duckdb_free(dbname); duckdb_free(schname); duckdb_free(tname); 
+            duckdb_free(cname); duckdb_free(ctype);
         }
 
-        if (current_table)
+        if (curr_tab)
         {
-            CreateForeignTableStmt *create = makeNode(CreateForeignTableStmt);
-            create->base.relation = makeRangeVar(stmt->local_schema, current_table, -1);
-            create->base.tableElts = current_columns;
-            create->servername = server->servername;
-            create->options = list_make1(makeDefElem("table", (Node *)makeString(current_table), -1));
-            commands = lappend(commands, create);
+            appendStringInfo(&ddl, ") SERVER %s OPTIONS (table '%s.%s.%s')", 
+                quote_identifier(server->servername), curr_db, curr_sch, curr_tab);
+            if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
+                elog(ERROR, "SPI failed: %s", ddl.data);
         }
         duckdb_destroy_result(&res);
     }
 
-    return commands;
+    SPI_finish();
+    return NIL;
 }

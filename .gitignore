@@ -26,6 +26,6 @@ compile_error*.log
 compile_final_error.log
 
 # libduckdb 
-libduckdb.andlibduckdb*
+libduckdb*
 duckdb.h
 duckdb.hpp
