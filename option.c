@@ -5,8 +5,7 @@
  * IDENTIFICATION
  *        option.c
  * 
- *-------------------------------------------------------------------------
- */
+ *------------------------------------------------------------------------*/
 
 #include "postgres.h"
 #include "duckdb_fdw.h"
@@ -20,7 +19,7 @@
 #include "utils/lsyscache.h"
 
 /*
- * 选项上下文结构体
+ * Option context structure
  */
 struct DuckDBFdwOption
 {
@@ -28,16 +27,40 @@ struct DuckDBFdwOption
 	Oid			optcontext;
 };
 
+/*
+ * Valid options
+ */
 static struct DuckDBFdwOption valid_options[] =
 {
+	/* Connection options */
 	{"database", ForeignServerRelationId},
+    
+    /* S3 / Cloud Credentials */
+    {"s3_region", ForeignServerRelationId},
+    {"s3_access_key_id", ForeignServerRelationId},
+    {"s3_secret_access_key", ForeignServerRelationId},
+    {"s3_endpoint", ForeignServerRelationId},
+    {"s3_endpoint_type", ForeignServerRelationId}, /* e.g. 's3_tables' */
+    {"s3_use_ssl", ForeignServerRelationId},
+    
+    /* Catalogs */
+    {"attach_catalogs", ForeignServerRelationId}, /* format: 'name=uri;type=iceberg' */
+
+    /* Extensions */
+    {"extensions", ForeignServerRelationId}, /* e.g., 'httpfs,spatial,iceberg' */
+
+	/* Table options */
 	{"table", ForeignTableRelationId},
+    {"read_parquet", ForeignTableRelationId}, /* Path to parquet file */
+	
+    /* Execution options */
 	{"use_remote_estimate", ForeignServerRelationId},
+	
 	{NULL, InvalidOid}
 };
 
 /*
- * 检查选项是否有效
+ * Check if the option is valid
  */
 static bool
 duckdb_is_valid_option(const char *option, Oid context)
@@ -52,7 +75,7 @@ duckdb_is_valid_option(const char *option, Oid context)
 }
 
 /*
- * FDW 选项验证器
+ * FDW Option Validator
  */
 PG_FUNCTION_INFO_V1(duckdb_fdw_validator);
 Datum
@@ -75,7 +98,7 @@ duckdb_fdw_validator(PG_FUNCTION_ARGS)
 }
 
 /*
- * 提取 FDW 选项
+ * Extract FDW options into a struct
  */
 duckdb_opt *
 duckdb_get_options(Oid foreignoid)
@@ -116,7 +139,7 @@ duckdb_get_options(Oid foreignoid)
 			opt->use_remote_estimate = defGetBoolean(def);
 	}
 
-	/* 如果没有显式指定表名，使用 Postgres 本地表名 */
+	/* If table name is not specified, use Postgres relation name */
 	if (!opt->svr_table && f_table)
 		opt->svr_table = get_rel_name(foreignoid);
 

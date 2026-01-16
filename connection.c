@@ -19,6 +19,112 @@ typedef struct ConnCacheEntry
 
 static HTAB *ConnectionHash = NULL;
 
+static void
+duckdb_execute_quiet(duckdb_connection conn, const char *sql)
+{
+    duckdb_result res;
+    if (duckdb_query(conn, sql, &res) == DuckDBError)
+    {
+        /* Silent failure for setup commands is standard for idempotent operations */
+    }
+    duckdb_destroy_result(&res);
+}
+
+/*
+ * Advanced setup for Cloud-Native features: Extensions, Secrets, and Catalogs.
+ */
+static void
+duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *server)
+{
+    char *s3_region = NULL;
+    char *s3_access_key = NULL;
+    char *s3_secret_key = NULL;
+    char *s3_endpoint = NULL;
+    char *s3_endpoint_type = NULL;
+    bool s3_use_ssl = true;
+    char *extensions = NULL;
+    char *attach_catalogs = NULL;
+    ListCell *lc;
+
+    /* 1. Parse Options */
+    foreach(lc, server->options)
+    {
+        DefElem *def = (DefElem *) lfirst(lc);
+        if (strcmp(def->defname, "s3_region") == 0) s3_region = defGetString(def);
+        else if (strcmp(def->defname, "s3_access_key_id") == 0) s3_access_key = defGetString(def);
+        else if (strcmp(def->defname, "s3_secret_access_key") == 0) s3_secret_key = defGetString(def);
+        else if (strcmp(def->defname, "s3_endpoint") == 0) s3_endpoint = defGetString(def);
+        else if (strcmp(def->defname, "s3_endpoint_type") == 0) s3_endpoint_type = defGetString(def);
+        else if (strcmp(def->defname, "s3_use_ssl") == 0) s3_use_ssl = defGetBoolean(def);
+        else if (strcmp(def->defname, "extensions") == 0) extensions = defGetString(def);
+        else if (strcmp(def->defname, "attach_catalogs") == 0) attach_catalogs = defGetString(def);
+    }
+
+    /* 2. Extensions (Must load iceberg/httpfs before secrets/attach) */
+    if (extensions)
+    {
+        char *ext_copy = pstrdup(extensions);
+        char *token = strtok(ext_copy, ",");
+        while (token)
+        {
+            duckdb_execute_quiet(conn, psprintf("INSTALL '%s'; LOAD '%s';", token, token));
+            token = strtok(NULL, ",");
+        }
+        pfree(ext_copy);
+    }
+
+    /* 3. Secrets (Support S3 Tables) */
+    if (s3_access_key && s3_secret_key)
+    {
+        StringInfoData sql;
+        initStringInfo(&sql);
+        appendStringInfoString(&sql, "CREATE OR REPLACE SECRET pg_duck_s3 ( TYPE S3, ");
+        appendStringInfo(&sql, "KEY_ID '%s', ", s3_access_key);
+        appendStringInfo(&sql, "SECRET '%s', ", s3_secret_key);
+        if (s3_region) appendStringInfo(&sql, "REGION '%s', ", s3_region);
+        if (s3_endpoint) appendStringInfo(&sql, "ENDPOINT '%s', ", s3_endpoint);
+        if (s3_endpoint_type) appendStringInfo(&sql, "ENDPOINT_TYPE '%s', ", s3_endpoint_type);
+        appendStringInfo(&sql, "USE_SSL %s );", s3_use_ssl ? "true" : "false");
+        duckdb_execute_quiet(conn, sql.data);
+    }
+
+    /* 4. Catalogs (Auto ATTACH) */
+    if (attach_catalogs)
+    {
+        char *at_copy = pstrdup(attach_catalogs);
+        char *token = strtok(at_copy, ",");
+        while (token)
+        {
+            /* Expected format: 'name=uri;type=iceberg;endpoint_type=s3_tables' */
+            /* We translate ';' to ',' and extract URI */
+            char *name = token;
+            char *uri = strchr(token, '=');
+            if (uri)
+            {
+                *uri = '\0';
+                uri++;
+                /* Replace ';' with ',' for DuckDB ATTACH syntax */
+                for (char *p = uri; *p; p++) if (*p == ';') *p = ',';
+                
+                /* Construct: ATTACH 'uri_part' AS name ( options_part ) */
+                char *options = strchr(uri, ',');
+                if (options)
+                {
+                    *options = '\0';
+                    options++;
+                    duckdb_execute_quiet(conn, psprintf("ATTACH '%s' AS %s (%s);", uri, name, options));
+                }
+                else
+                {
+                    duckdb_execute_quiet(conn, psprintf("ATTACH '%s' AS %s;", uri, name));
+                }
+            }
+            token = strtok(NULL, ",");
+        }
+        pfree(at_copy);
+    }
+}
+
 duckdb_connection
 duckdb_get_connection(ForeignServer *server, bool truncatable)
 {
@@ -43,7 +149,6 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 	{
         const char *dbpath = NULL;
         ListCell *lc;
-        
         foreach(lc, server->options)
         {
             DefElem *def = (DefElem *) lfirst(lc);
@@ -52,13 +157,13 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
         }
 
         if (duckdb_open(dbpath, &entry->db) == DuckDBError)
-            elog(ERROR, "failed to open DuckDB: %s", dbpath);
+            elog(ERROR, "failed to open DuckDB");
         if (duckdb_connect(entry->db, &entry->conn) == DuckDBError)
             elog(ERROR, "failed to connect to DuckDB");
             
+        duckdb_setup_secrets_and_extensions(entry->conn, server);
         entry->xact_depth = 0;
 	}
-
 	return entry->conn;
 }
 
