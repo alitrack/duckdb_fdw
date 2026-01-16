@@ -4,11 +4,24 @@
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+
+# 参数解析
+VERBOSE=false
+if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then
+    VERBOSE=true
+fi
 
 echo -e "${BLUE}====================================================${NC}"
 echo -e "${BLUE}      pg_duck (DuckDB FDW) 自动化集成测试脚本        ${NC}"
 echo -e "${BLUE}====================================================${NC}"
+
+if [ "$VERBOSE" = true ]; then
+    echo -e "${YELLOW}模式: 详细输出 (Verbose)${NC}"
+else
+    echo -e "${YELLOW}模式: 静默执行 (使用 -v 开启详细输出)${NC}"
+fi
 
 # 1. 编译
 echo -e "\n${BLUE}[1/3] 编译并安装插件...${NC}"
@@ -33,6 +46,9 @@ TEST_FILES=(
     "examples/08_ducklake_attach.sql"
     "examples/09_ducklake_import.sql"
     "examples/10_iceberg_direct_scan.sql"
+    "examples/11_sf3_analytics.sql"
+    "examples/12_s3_tables_direct.sql"
+    "examples/13_all_datasets_test.sql"
 )
 
 # 3. 运行测试
@@ -41,31 +57,36 @@ SUCCESS_COUNT=0
 TOTAL_COUNT=${#TEST_FILES[@]}
 
 for f in "${TEST_FILES[@]}"; do
-    printf "运行 %-40s ... " "$f" 
-    # 执行 psql 命令，捕获 stderr 以便分析错误原因
-    ERROR_MSG=$(/usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -f "$f" 2>&1 > /dev/null)
+    echo -e "${BLUE}>>> 正在运行: $f${NC}"
     
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}[OK]${NC}"
+    if [ "$VERBOSE" = true ]; then
+        # 详细模式：直接运行并将结果输出到屏幕
+        /usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -f "$f"
+        RET=$?
+    else
+        # 静默模式：捕获错误信息
+        ERROR_MSG=$(/usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -f "$f" 2>&1 > /dev/null)
+        RET=$?
+    fi
+    
+    if [ $RET -eq 0 ]; then
+        echo -e "${GREEN}[OK] $f${NC}\n"
         ((SUCCESS_COUNT++))
     else
-        # 智能识别错误原因
-        if [[ "$ERROR_MSG" == *"Catalog Error"* || "$ERROR_MSG" == *"IO Error"* || "$ERROR_MSG" == *"Network"* ]]; then
-            echo -e "${RED}[FAILED]${NC} (可能是网络或凭证问题)"
-        else
-            echo -e "${RED}[FAILED]${NC} (逻辑错误)"
+        echo -e "${RED}[FAILED] $f${NC}"
+        if [ "$VERBOSE" = false ]; then
             echo "错误细节: $ERROR_MSG"
         fi
+        echo -e ""
     fi
 done
 
 # 4. 汇总
-echo -e "\n${BLUE}[3/3] 测试汇总${NC}"
+echo -e "${BLUE}[3/3] 测试汇总${NC}"
 echo "----------------------------------------------------"
 if [ $SUCCESS_COUNT -eq $TOTAL_COUNT ]; then
     echo -e "${GREEN}全部测试通过! ($SUCCESS_COUNT/$TOTAL_COUNT)${NC}"
 else
     echo -e "${RED}部分测试失败 ($SUCCESS_COUNT/$TOTAL_COUNT)。${NC}"
-    echo -e "提示: 涉及 S3/Iceberg 的测试需要网络环境支持。本地功能 (01,02,03,06) 必须为 OK。"
 fi
 echo "----------------------------------------------------"

@@ -65,6 +65,7 @@ extern Datum duckdb_fdw_handler(PG_FUNCTION_ARGS);
 extern Datum duckdb_fdw_validator(PG_FUNCTION_ARGS);
 extern Datum duckdb_fdw_version(PG_FUNCTION_ARGS);
 extern Datum duckdb_execute(PG_FUNCTION_ARGS);
+extern List *duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid);
 extern duckdb_opt * duckdb_get_options(Oid foreigntableid);
 
 /* Internal functions */
@@ -77,6 +78,7 @@ extern char *duckdb_extract_as_cstring(duckdb_result *res, int col, uint64_t row
 /* Deparse functions */
 extern void duckdb_deparse_select_stmt_for_rel(StringInfo buf, PlannerInfo *root, RelOptInfo *rel, List *tlist, List *remote_conds, List *pathkeys, bool has_final_sort, bool has_limit, bool is_subquery, List **retrieved_attrs, List **params_list);
 extern List *duckdb_build_tlist_to_deparse(RelOptInfo *foreignrel);
+extern void duckdb_classify_conditions(PlannerInfo *root, RelOptInfo *baserel, List *input_conds, List **remote_conds, List **local_conds);
 
 /* Missing symbols */
 extern Expr * duckdb_find_em_expr_for_rel(EquivalenceClass *ec, RelOptInfo *rel);

@@ -20,12 +20,14 @@ pg_log.txt
 test_db
 *.duckdb
 *.duckdb.wal
+docs
 
 # Compilation logs
 compile_error*.log
 compile_final_error.log
 
 # libduckdb 
-libduckdb.andlibduckdb*
+libduckdb*
 duckdb.h
 duckdb.hpp
+docs/

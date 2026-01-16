@@ -46,7 +46,7 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
     char *attach_catalogs = NULL;
     ListCell *lc;
 
-    /* 1. Parse Options */
+    /* 1. Parse Options and Detect Requirements */
     foreach(lc, server->options)
     {
         DefElem *def = (DefElem *) lfirst(lc);
@@ -60,17 +60,38 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         else if (strcmp(def->defname, "attach_catalogs") == 0) attach_catalogs = defGetString(def);
     }
 
-    /* 2. Extensions (Must load iceberg/httpfs before secrets/attach) */
-    if (extensions)
+    /* 2. Intelligent Extension Autoloading */
     {
-        char *ext_copy = pstrdup(extensions);
-        char *token = strtok(ext_copy, ",");
-        while (token)
+        bool need_httpfs = (s3_access_key != NULL);
+        bool need_iceberg = false;
+
+        if (attach_catalogs)
         {
-            duckdb_execute_quiet(conn, psprintf("INSTALL '%s'; LOAD '%s';", token, token));
-            token = strtok(NULL, ",");
+            /* DuckLake resource types are handled by the 'iceberg' extension */
+            if (strstr(attach_catalogs, "type=iceberg") || strstr(attach_catalogs, "type=ducklake"))
+            {
+                need_iceberg = true;
+                need_httpfs = true;
+            }
         }
-        pfree(ext_copy);
+
+        /* Use ERROR level to ensure user sees why extension loading fails */
+        if (need_httpfs) duckdb_do_sql_command(conn, "INSTALL 'httpfs'; LOAD 'httpfs';", ERROR);
+        if (need_iceberg) duckdb_do_sql_command(conn, "INSTALL 'iceberg'; LOAD 'iceberg';", ERROR);
+
+        /* Also load any manually specified extensions */
+        if (extensions)
+        {
+            char *ext_copy = pstrdup(extensions);
+            char *token = strtok(ext_copy, ",");
+            while (token)
+            {
+                if (strcmp(token, "httpfs") != 0 && strcmp(token, "iceberg") != 0)
+                    duckdb_do_sql_command(conn, psprintf("INSTALL '%s'; LOAD '%s';", token, token), ERROR);
+                token = strtok(NULL, ",");
+            }
+            pfree(ext_copy);
+        }
     }
 
     /* 3. Secrets (Support S3 Tables) */
@@ -85,7 +106,7 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         if (s3_endpoint) appendStringInfo(&sql, "ENDPOINT '%s', ", s3_endpoint);
         if (s3_endpoint_type) appendStringInfo(&sql, "ENDPOINT_TYPE '%s', ", s3_endpoint_type);
         appendStringInfo(&sql, "USE_SSL %s );", s3_use_ssl ? "true" : "false");
-        duckdb_execute_quiet(conn, sql.data);
+        duckdb_do_sql_command(conn, sql.data, ERROR);
     }
 
     /* 4. Catalogs (Auto ATTACH) */
@@ -95,28 +116,24 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         char *token = strtok(at_copy, ",");
         while (token)
         {
-            /* Expected format: 'name=uri;type=iceberg;endpoint_type=s3_tables' */
-            /* We translate ';' to ',' and extract URI */
             char *name = token;
             char *uri = strchr(token, '=');
             if (uri)
             {
                 *uri = '\0';
                 uri++;
-                /* Replace ';' with ',' for DuckDB ATTACH syntax */
                 for (char *p = uri; *p; p++) if (*p == ';') *p = ',';
                 
-                /* Construct: ATTACH 'uri_part' AS name ( options_part ) */
                 char *options = strchr(uri, ',');
                 if (options)
                 {
                     *options = '\0';
                     options++;
-                    duckdb_execute_quiet(conn, psprintf("ATTACH '%s' AS %s (%s);", uri, name, options));
+                    duckdb_do_sql_command(conn, psprintf("ATTACH '%s' AS %s (%s);", uri, name, options), ERROR);
                 }
                 else
                 {
-                    duckdb_execute_quiet(conn, psprintf("ATTACH '%s' AS %s;", uri, name));
+                    duckdb_do_sql_command(conn, psprintf("ATTACH '%s' AS %s;", uri, name), ERROR);
                 }
             }
             token = strtok(NULL, ",");
