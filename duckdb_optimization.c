@@ -5,33 +5,36 @@
 #include "catalog/pg_type.h"
 #include "utils/lsyscache.h"
 
+/*
+ * Extract DuckDB value as a safe C-string compatible with Postgres input functions.
+ * Returns NULL if the value is NULL.
+ * Returns a palloc'd string otherwise.
+ */
 char *
 duckdb_extract_as_cstring(duckdb_result *res, int col, uint64_t row, Oid pgtyp)
 {
     if (duckdb_value_is_null(res, col, row))
-    {
-        /* elog(NOTICE, "DEBUG: Row %lu Col %d is NULL", row, col); */
         return NULL;
-    }
 
+    /* 
+     * Since we force CAST(... AS VARCHAR) in deparse.c for complex types,
+     * duckdb_value_varchar should always return a valid string here.
+     */
     char *raw_val = duckdb_value_varchar(res, col, row);
     if (!raw_val) 
-    {
-        elog(WARNING, "duckdb_fdw: Unexpected NULL varchar for non-NULL value at row %lu col %d", row, col);
         return NULL;
-    }
-
-    /* DEBUG: Print raw value */
-    /* Only log complex types to avoid spam */
-    if (pgtyp == 393219 /* vector OID usually dynamic, but let's just log everything for now */ || pgtyp == 1022 /* float8[] */) 
-    {
-        elog(NOTICE, "DEBUG: Row %lu Col %d OID %u Raw: '%s'", row, col, pgtyp, raw_val);
-    }
 
     char *val = pstrdup(raw_val);
     duckdb_free(raw_val);
 
-    /* Format Adaptation */
+    /* 
+     * Format Adaptation:
+     * Standard Postgres arrays (e.g. float8[]) require "{}" syntax.
+     * DuckDB returns "[]" (JSON style).
+     * 
+     * pgvector is a base type, so get_element_type() returns InvalidOid,
+     * skipping this block and preserving "[]", which is exactly what pgvector wants.
+     */
     if (get_element_type(pgtyp) != InvalidOid)
     {
         size_t len = strlen(val);
@@ -45,4 +48,5 @@ duckdb_extract_as_cstring(duckdb_result *res, int col, uint64_t row, Oid pgtyp)
     return val;
 }
 
+/* Legacy stub */
 Datum duckdb_convert_to_pg(Oid pgtyp, int pgtypmod, duckdb_result *res, int col, uint64_t row) { return (Datum)0; }
