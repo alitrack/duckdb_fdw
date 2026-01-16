@@ -25,3 +25,7 @@ test_db
 compile_error*.log
 compile_final_error.log
 
+# libduckdb 
+libduckdb.andlibduckdb*
+duckdb.h
+duckdb.hpp
