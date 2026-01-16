@@ -1,0 +1,24 @@
+services:
+  pg_duckdb:
+    build:
+      context: .
+      args:
+        - POSTGRES_VERSION=17
+    container_name: duckdb_fdw_test
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=test_db
+    volumes:
+      # 挂载本地目录用于存储 DuckDB 文件
+      - ./test_data:/var/lib/postgresql/duckdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  test_data:

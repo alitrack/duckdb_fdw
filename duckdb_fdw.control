@@ -1,0 +1,5 @@
+# duckdb FDW
+comment = 'DuckDB Foreign Data Wrapper (Native C API)'
+default_version = '2.0.0'
+module_pathname = '$libdir/duckdb_fdw'
+relocatable = true

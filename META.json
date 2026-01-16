@@ -1,0 +1,44 @@
+{
+   "name": "duckdb_fdw",
+   "abstract": "Foreign Data Wrapper for DuckDB databases",
+   "description": "PostgreSQL extension which implements a Foreign Data Wrapper (FDW) for DuckDB databases.",
+   "version": "2.1.1",
+   "maintainer": "alitrack",
+   "license": "postgresql",
+   "provides": {
+      "duckdb_fdw": {
+         "abstract": "Foreign Data Wrapper for DuckDB databases",
+         "file": "duckdb_fdw.c",
+         "docfile": "README.md",
+         "version": "2.1.1"
+      }
+   },
+   "prereqs": {
+      "runtime": {
+         "requires": {
+            "PostgreSQL": "9.6.0"
+         }
+      }
+   },
+   "resources": {
+      "bugtracker": {
+         "web": "http://github.com/alitrack/duckdb_fdw/issues/"
+      },
+      "repository": {
+        "url":  "git://github.com/alitrack/duckdb_fdw.git",
+        "web":  "https://github.com/alitrack/duckdb_fdw/",
+        "type": "git"
+      }
+   },
+   "generated_by": "Steven Lee",
+   "meta-spec": {
+      "version": "1.0.0",
+      "url": "http://pgxn.org/meta/spec.txt"
+   },
+   "tags": [
+      "duckdb",
+      "fdw",
+      "foreign data wrapper",
+      "duckdb_fdw"
+   ]
+}
