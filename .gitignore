@@ -17,10 +17,11 @@ logfile
 pg_log.txt
 
 # Temporary test data and databases
-test_db/
+test_db
 *.duckdb
 *.duckdb.wal
 
 # Compilation logs
 compile_error*.log
 compile_final_error.log
+
