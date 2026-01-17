@@ -19,6 +19,10 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
 {
 	DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *)palloc0(sizeof(DuckDBFdwRelationInfo));
 	baserel->fdw_private = (void *)fpinfo;
+    fpinfo->foreigntableid = foreigntableid;
+    
+    /* Initially assume base relations are shippable */
+    fpinfo->pushdown_safe = true;
     
     /* Classification of conditions: Remote vs Local */
     duckdb_classify_conditions(root, baserel, baserel->baserestrictinfo,
@@ -46,18 +50,36 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
     List *params_list = NIL;
     List *deparse_tlist;
     DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *) baserel->fdw_private;
+    Index       scanrelid;
+    Oid         rel_oid = foreigntableid;
 
 	initStringInfo(&sql);
-    deparse_tlist = duckdb_build_tlist_to_deparse(baserel);
+
+    if (IS_UPPER_REL(baserel))
+    {
+        /* Aggregation pushdown */
+        scanrelid = 0; /* Upper relations like aggregates don't scan a single relation ID directly in the conventional sense */
+        deparse_tlist = tlist; /* Use the target list provided by the planner */
+        
+        /* Retrieve correct table OID from fpinfo */
+        rel_oid = fpinfo->foreigntableid;
+    }
+    else
+    {
+        /* Base relation scan */
+        scanrelid = baserel->relid;
+        deparse_tlist = duckdb_build_tlist_to_deparse(baserel);
+    }
+
 	duckdb_deparse_select_stmt_for_rel(&sql, root, baserel, deparse_tlist, fpinfo->remote_conds, NIL, false, false, false, &retrieved_attrs, &params_list);
 
-	fdw_private = list_make2(makeString(sql.data), retrieved_attrs);
+	fdw_private = list_make3(makeString(sql.data), retrieved_attrs, makeInteger(rel_oid));
     
     /* 
      * scan_clauses contains both remote and local conditions in RestrictInfo format.
      * We must pass only local conditions to make_foreignscan for local evaluation.
      */
-	return make_foreignscan(tlist, extract_actual_clauses(fpinfo->local_conds, false), baserel->relid, NIL, fdw_private, NIL, NIL, outer_plan);
+	return make_foreignscan(tlist, extract_actual_clauses(fpinfo->local_conds, false), scanrelid, NIL, fdw_private, (IS_UPPER_REL(baserel) ? tlist : NIL), NIL, outer_plan);
 }
 
 static void
@@ -65,17 +87,27 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 {
 	DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
 	ForeignScan *fsplan = (ForeignScan *)node->ss.ps.plan;
-	EState *estate = node->ss.ps.state;
-    RangeTblEntry *rte;
     ForeignTable *table;
+    Oid foreigntableid;
 	
 	node->fdw_state = (void *)festate;
-	festate->tupdesc = RelationGetDescr(node->ss.ss_currentRelation);
+
+    if (fsplan->scan.scanrelid > 0)
+    {
+	    festate->tupdesc = RelationGetDescr(node->ss.ss_currentRelation);
+        foreigntableid = RelationGetRelid(node->ss.ss_currentRelation);
+    }
+    else
+    {
+        /* Upper relation (Aggregate) */
+        festate->tupdesc = node->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+        foreigntableid = intVal(list_nth(fsplan->fdw_private, 2));
+    }
+
     /* Essential: Initialize metadata for all columns for BuildTupleFromCStrings */
 	festate->attinmeta = TupleDescGetAttInMetadata(festate->tupdesc);
 
-    rte = exec_rt_fetch(fsplan->scan.scanrelid, estate);
-    table = GetForeignTable(rte->relid);
+    table = GetForeignTable(foreigntableid);
     festate->conn = duckdb_get_connection(GetForeignServer(table->serverid), false);
     
 	festate->query = strVal(list_nth(fsplan->fdw_private, 0));
@@ -160,6 +192,48 @@ duckdbReScanForeignScan(ForeignScanState *node)
     duckdbBeginForeignScan(node, 0);
 }
 
+static void
+duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
+							RelOptInfo *input_rel, RelOptInfo *output_rel,
+							void *extra)
+{
+	DuckDBFdwRelationInfo *fpinfo;
+
+	/*
+	 * If input_rel is not shippable, then output_rel cannot be either.
+	 */
+	if (input_rel == NULL || input_rel->fdw_private == NULL ||
+		!((DuckDBFdwRelationInfo *) input_rel->fdw_private)->pushdown_safe)
+		return;
+
+	if (stage != UPPERREL_GROUP_AGG)
+		return;
+
+    elog(NOTICE, "duckdb_fdw: duckdbGetForeignUpperPaths entered for UPPERREL_GROUP_AGG");
+
+	fpinfo = (DuckDBFdwRelationInfo *) palloc0(sizeof(DuckDBFdwRelationInfo));
+	fpinfo->pushdown_safe = false;
+    fpinfo->outerrel = input_rel;
+    fpinfo->foreigntableid = ((DuckDBFdwRelationInfo *) input_rel->fdw_private)->foreigntableid;
+	output_rel->fdw_private = fpinfo;
+
+	/*
+	 * Determine whether the aggregation is shippability.
+	 */
+	if (duckdb_is_foreign_expr(root, output_rel, (Expr *) output_rel->reltarget->exprs))
+	{
+		fpinfo->pushdown_safe = true;
+		
+		/* Add path */
+		add_path(output_rel, (Path *)
+				 create_foreignscan_path(root, output_rel,
+										  output_rel->reltarget,
+										  output_rel->rows,
+										  10, 20, NIL,
+										  NULL, NULL, NIL));
+	}
+}
+
 PG_FUNCTION_INFO_V1(duckdb_fdw_handler);
 Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
 {
@@ -172,7 +246,8 @@ Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
 	fdwroutine->ReScanForeignScan = duckdbReScanForeignScan;
 	fdwroutine->EndForeignScan = duckdbEndForeignScan;
     
-    /* NEW: Support for IMPORT FOREIGN SCHEMA */
+    /* NEW: Support for Pushdown & IMPORT */
+    fdwroutine->GetForeignUpperPaths = duckdbGetForeignUpperPaths;
     fdwroutine->ImportForeignSchema = duckdb_import_foreign_schema;
 
 	PG_RETURN_POINTER(fdwroutine);

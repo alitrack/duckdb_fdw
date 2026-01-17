@@ -252,7 +252,15 @@ duckdb_is_foreign_expr(PlannerInfo *root,
 {
 	foreign_glob_cxt glob_cxt;
 	foreign_loc_cxt loc_cxt;
-	DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *) (baserel->fdw_private);
+	DuckDBFdwRelationInfo *fpinfo;
+
+    if (expr == NULL)
+        return true;
+
+    if (baserel == NULL || baserel->fdw_private == NULL)
+        return false;
+
+    fpinfo = (DuckDBFdwRelationInfo *) (baserel->fdw_private);
 
 	/*
 	 * Check that the expression consists of nodes that are safe to execute
@@ -267,13 +275,36 @@ duckdb_is_foreign_expr(PlannerInfo *root,
 	 * meaningful by the core code.  For other relation, use their own relids.
 	 */
 	if (IS_UPPER_REL(baserel))
+    {
+        if (fpinfo->outerrel == NULL)
+            return false;
 		glob_cxt.relids = fpinfo->outerrel->relids;
+    }
 	else
 		glob_cxt.relids = baserel->relids;
+
 	loc_cxt.collation = InvalidOid;
 	loc_cxt.state = FDW_COLLATE_NONE;
-	if (!duckdb_foreign_expr_walker((Node *) expr, &glob_cxt, &loc_cxt))
-		return false;
+
+    /* If it's a list, check each element */
+    if (IsA(expr, List))
+    {
+        ListCell *lc;
+        foreach(lc, (List *)expr)
+        {
+            Node *n = (Node *) lfirst(lc);
+            if (IsA(n, TargetEntry))
+                n = (Node *) ((TargetEntry *) n)->expr;
+            
+            if (!duckdb_foreign_expr_walker(n, &glob_cxt, &loc_cxt))
+                return false;
+        }
+    }
+    else
+    {
+        if (!duckdb_foreign_expr_walker((Node *) expr, &glob_cxt, &loc_cxt))
+            return false;
+    }
 
 	/*
 	 * If the expression has a valid collation that does not arise from a
@@ -282,18 +313,7 @@ duckdb_is_foreign_expr(PlannerInfo *root,
 	if (loc_cxt.state == FDW_COLLATE_UNSAFE)
 		return false;
 
-	/*
-	 * An expression which includes any mutable functions can't be sent over
-	 * because its result is not stable.  For example, sending now() remote
-	 * side could cause confusion from clock offsets.  Future versions might
-	 * be able to make this choice with more granularity. (We check this last
-	 * because it requires a lot of expensive catalog lookups.)
-	 */
-	if (contain_mutable_functions((Node *) expr))
-		return false;
-
-	/* OK to evaluate on the remote server */
-	return true;
+    return true;
 }
 
 /*
@@ -393,14 +413,22 @@ duckdb_foreign_expr_walker(Node *node,
 
 	/* Need do nothing for empty subexpressions */
 	if (node == NULL)
+    {
+        /* elog(NOTICE, "duckdb_fdw: walker encountered NULL node"); */
 		return true;
+    }
 
 	/* Set up inner_cxt for possible recursion to child nodes */
 	inner_cxt.collation = InvalidOid;
 	inner_cxt.state = FDW_COLLATE_NONE;
+
+    /* Debug log */
+    elog(NOTICE, "duckdb_fdw: walker checking node type %d", (int)nodeTag(node));
+
 	switch (nodeTag(node))
 	{
 		case T_Var:
+            elog(NOTICE, "duckdb_fdw: walker checking T_Var");
 			{
 				Var		   *var = (Var *) node;
 
