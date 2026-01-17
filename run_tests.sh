@@ -51,6 +51,12 @@ TEST_FILES=(
     "examples/13_all_datasets_test.sql"
 )
 
+# 2.5 加载本地环境变量 (.env)
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+    echo -e "${YELLOW}已加载本地 .env 凭证进行测试。${NC}"
+fi
+
 # 3. 运行测试
 echo -e "\n${BLUE}[2/3] 开始执行测试脚本...${NC}"
 SUCCESS_COUNT=0
@@ -59,15 +65,25 @@ TOTAL_COUNT=${#TEST_FILES[@]}
 for f in "${TEST_FILES[@]}"; do
     echo -e "${BLUE}>>> 正在运行: $f${NC}"
     
+    # 创建临时测试文件，替换占位符
+    TEMP_SQL=$(mktemp)
+    cp "$f" "$TEMP_SQL"
+    if [ ! -z "$S3_ACCESS_KEY" ]; then
+        sed -i "s/YOUR_ACCESS_KEY/$S3_ACCESS_KEY/g" "$TEMP_SQL"
+        sed -i "s|YOUR_SECRET_KEY|$S3_SECRET_KEY|g" "$TEMP_SQL"
+    fi
+
     if [ "$VERBOSE" = true ]; then
         # 详细模式：直接运行并将结果输出到屏幕
-        /usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -f "$f"
+        /usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -f "$TEMP_SQL"
         RET=$?
     else
         # 静默模式：捕获错误信息
-        ERROR_MSG=$(/usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -f "$f" 2>&1 > /dev/null)
+        ERROR_MSG=$(/usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -f "$TEMP_SQL" 2>&1 > /dev/null)
         RET=$?
     fi
+    
+    rm -f "$TEMP_SQL"
     
     if [ $RET -eq 0 ]; then
         echo -e "${GREEN}[OK] $f${NC}\n"

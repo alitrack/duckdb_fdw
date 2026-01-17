@@ -31,3 +31,4 @@ libduckdb*
 duckdb.h
 duckdb.hpp
 docs/
+.env
