@@ -29,6 +29,11 @@ get_system_info() {
             esac
             LIB_EXT="so"
             ;;
+        MINGW*|CYGWIN*|MSYS*)
+            PLATFORM="windows"
+            ARCH="amd64"
+            LIB_EXT="dll"
+            ;;
         *)
             echo "Unsupported operating system: $OS"
             exit 1

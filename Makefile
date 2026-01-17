@@ -53,7 +53,9 @@ else
 endif
 
 # 设置 RPATH，确保运行时能找到同目录下的 libduckdb.so
+ifneq ($(detected_OS),Windows)
 SHLIB_LINK += -Wl,-rpath,'$$ORIGIN' -Wl,-rpath,$(PG_LIB)
+endif
 
 # 安装钩子
 install-duckdb:

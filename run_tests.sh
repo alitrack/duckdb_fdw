@@ -13,6 +13,13 @@ if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then
     VERBOSE=true
 fi
 
+# Environment Configuration
+PSQL_BIN=${PSQL_BIN:-psql}
+PGPORT=${PGPORT:-5433}
+PGHOST=${PGHOST:-/tmp}
+PGUSER=${PGUSER:-postgres}
+PGDATABASE=${PGDATABASE:-postgres}
+
 echo -e "${BLUE}====================================================${NC}"
 echo -e "${BLUE}      pg_duck (DuckDB FDW) 自动化集成测试脚本        ${NC}"
 echo -e "${BLUE}====================================================${NC}"
@@ -25,8 +32,16 @@ fi
 
 # 1. 编译
 echo -e "\n${BLUE}[1/3] 编译并安装插件...${NC}"
+# Use nproc if available, else sysctl (macOS), else 1
+NPROC=1
+if command -v nproc > /dev/null; then
+    NPROC=$(nproc)
+elif [ "$(uname)" == "Darwin" ]; then
+    NPROC=$(sysctl -n hw.ncpu)
+fi
+
 make USE_PGXS=1 clean > /dev/null 2>&1
-make USE_PGXS=1 -j$(nproc) > /dev/null 2>&1
+make USE_PGXS=1 -j$NPROC > /dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo -e "${RED}编译失败！请检查编译日志。${NC}"
     exit 1
@@ -62,24 +77,34 @@ echo -e "\n${BLUE}[2/3] 开始执行测试脚本...${NC}"
 SUCCESS_COUNT=0
 TOTAL_COUNT=${#TEST_FILES[@]}
 
+# Current directory for path replacement
+CURRENT_DIR=$(pwd)
+
 for f in "${TEST_FILES[@]}"; do
     echo -e "${BLUE}>>> 正在运行: $f${NC}"
     
     # 创建临时测试文件，替换占位符
     TEMP_SQL=$(mktemp)
     cp "$f" "$TEMP_SQL"
+    
+    # Path replacement: Handle specific hardcoded path in examples
+    # Use perl for cross-platform replacement (sed varies on Mac/Linux)
+    perl -pi -e "s|/home/coder/workspace/pg_duck|$CURRENT_DIR|g" "$TEMP_SQL"
+
     if [ ! -z "$S3_ACCESS_KEY" ]; then
-        sed -i "s/YOUR_ACCESS_KEY/$S3_ACCESS_KEY/g" "$TEMP_SQL"
-        sed -i "s|YOUR_SECRET_KEY|$S3_SECRET_KEY|g" "$TEMP_SQL"
+        perl -pi -e "s/YOUR_ACCESS_KEY/$S3_ACCESS_KEY/g" "$TEMP_SQL"
+        perl -pi -e "s|YOUR_SECRET_KEY|$S3_SECRET_KEY|g" "$TEMP_SQL"
     fi
 
+    CMD="$PSQL_BIN -p $PGPORT -h $PGHOST -d $PGDATABASE -U $PGUSER -f $TEMP_SQL"
+
     if [ "$VERBOSE" = true ]; then
-        # 详细模式：直接运行并将结果输出到屏幕
-        /usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -f "$TEMP_SQL"
+        # 详细模式
+        $CMD
         RET=$?
     else
-        # 静默模式：捕获错误信息
-        ERROR_MSG=$(/usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -f "$TEMP_SQL" 2>&1 > /dev/null)
+        # 静默模式
+        ERROR_MSG=$($CMD 2>&1 > /dev/null)
         RET=$?
     fi
     
@@ -104,5 +129,6 @@ if [ $SUCCESS_COUNT -eq $TOTAL_COUNT ]; then
     echo -e "${GREEN}全部测试通过! ($SUCCESS_COUNT/$TOTAL_COUNT)${NC}"
 else
     echo -e "${RED}部分测试失败 ($SUCCESS_COUNT/$TOTAL_COUNT)。${NC}"
+    exit 1
 fi
 echo "----------------------------------------------------"
