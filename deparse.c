@@ -1392,10 +1392,30 @@ duckdb_deparse_explicit_target_list(List *tlist, List **retrieved_attrs,
 	foreach(lc, tlist)
 	{
 		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+        Oid         expr_type = exprType((Node *) tle->expr);
 
 		if (i > 0)
 			appendStringInfoString(buf, ", ");
-		duckdb_deparse_expr((Expr *) tle->expr, context);
+
+        /* 
+         * Safety: For complex types (Arrays, Vectors), we must force DuckDB 
+         * to serialize them to text.
+         */
+        if (expr_type == INT4OID || 
+            expr_type == INT8OID || 
+            expr_type == FLOAT8OID || 
+            expr_type == BOOLOID ||
+            expr_type == TEXTOID ||
+            expr_type == VARCHAROID)
+        {
+            duckdb_deparse_expr((Expr *) tle->expr, context);
+        }
+        else
+        {
+            appendStringInfoString(buf, "CAST(");
+            duckdb_deparse_expr((Expr *) tle->expr, context);
+            appendStringInfoString(buf, " AS VARCHAR)");
+        }
 
 		*retrieved_attrs = lappend_int(*retrieved_attrs, i + 1);
 		i++;
