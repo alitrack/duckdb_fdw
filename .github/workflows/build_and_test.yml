@@ -14,13 +14,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # --- Linux ---
           - os: ubuntu-22.04
             arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+          
+          # --- macOS ---
           - os: macos-13
             arch: amd64
           - os: macos-14
             arch: arm64
-          # Windows support is experimental. Added as requested.
+          
+          # --- Windows ---
+          # Windows support is experimental.
           - os: windows-latest
             arch: amd64
 
