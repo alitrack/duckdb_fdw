@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Add PostgreSQL Repo
+      run: |
+        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo apt-get update
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get install -y postgresql-15 postgresql-server-dev-15 postgresql-15-pgvector curl unzip build-essential
+
+    - name: Download libduckdb
+      run: ./download_libduckdb.sh
+
+    - name: Build and Install
+      run: |
+        make USE_PGXS=1
+        sudo make USE_PGXS=1 install
+
+    - name: Setup PostgreSQL
+      run: |
+        sudo service postgresql start
+        # Wait for postgres to be ready
+        while ! pg_isready; do sleep 1; done
+        
+        # Configure postgres user password
+        sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
+        
+        # Ensure pgvector is available
+        sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+    - name: Run Tests
+      run: |
+        # Patch run_tests.sh to use default psql (port 5432) and command
+        # Use simple variable replacement if possible, or sed
+        sed -i 's/-p 5433/-p 5432/g' run_tests.sh
+        sed -i 's|/usr/lib/postgresql/15/bin/psql|psql|g' run_tests.sh
+        
+        # Patch SQL files to use CI path for any absolute path references
+        sed -i "s|/home/coder/workspace/pg_duck|$GITHUB_WORKSPACE|g" examples/*.sql
+        
+        # Run tests with postgres user
+        export PGPASSWORD=postgres
+        export PGUSER=postgres
+        export PGHOST=localhost
+        
+        # Run the tests
+        ./run_tests.sh
