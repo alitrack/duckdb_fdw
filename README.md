@@ -19,8 +19,6 @@
     - Full support for **AWS S3 Tables** and Iceberg catalogs.
 - **Turbo Architecture**: Vectorized data transfer via Arrow C Data Interface and high-speed ingestion using the **Appender API**.
 
-For a detailed list of changes from 1.4.1 to now, see [**Evolution Guide (中英对照)**](docs/EVOLUTION.md).
-
 ## 📦 Installation
 
 ### Quick Build (Linux/macOS)
