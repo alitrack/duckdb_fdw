@@ -83,9 +83,15 @@ jobs:
         # We continue to at least test the 'download_libduckdb' script.
 
     # --- Common Steps ---
-    - name: Download libduckdb
+    - name: Download libduckdb (Unix)
+      if: runner.os != 'Windows'
       shell: bash
       run: ./download_libduckdb.sh
+
+    - name: Download libduckdb (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: .\download_libduckdb.ps1
 
     - name: Build and Install
       shell: bash
