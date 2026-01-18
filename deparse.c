@@ -1874,16 +1874,20 @@ duckdb_deparse_target_list(StringInfo buf,
              * to serialize them to text. Otherwise duckdb_value_varchar may return NULL.
              * We do this by wrapping the column in a CAST(... AS VARCHAR).
              */
-			if (attr->atttypid == INT4OID || 
-                attr->atttypid == INT8OID || 
-                attr->atttypid == FLOAT8OID || 
-                attr->atttypid == BOOLOID ||
-                attr->atttypid == TEXTOID ||
-                attr->atttypid == VARCHAROID)
-            {
-                /* Safe types: Fetch directly */
-			    duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
-            }
+			                        if (attr->atttypid == INT4OID || 
+			                attr->atttypid == INT8OID || 
+			                attr->atttypid == FLOAT8OID || 
+			                attr->atttypid == BOOLOID ||
+			                attr->atttypid == TEXTOID ||
+			                attr->atttypid == VARCHAROID ||
+			                attr->atttypid == DATEOID ||
+			                attr->atttypid == TIMESTAMPOID ||
+			                attr->atttypid == TIMESTAMPTZOID)
+			            {
+			                /* Safe types: Fetch directly */
+			                            duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
+			            }
+			
             else
             {
                 /* Complex types (Array, Vector): Force serialization */

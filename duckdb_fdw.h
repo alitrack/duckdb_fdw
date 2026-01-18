@@ -3,6 +3,7 @@
 
 #include "duckdb.h"
 #include "postgres.h"
+#include "nanoarrow/nanoarrow.h"
 #include "funcapi.h"
 #include "fmgr.h"
 #include "foreign/foreign.h"
@@ -63,13 +64,26 @@ typedef struct DuckDBFdwRelationInfo
 typedef struct DuckDBFdwExecState
 {
 	duckdb_connection conn;
-	duckdb_result res;
+    
+    /* Arrow Vectorized Execution Fields */
+	duckdb_arrow arrow_result;
+    duckdb_arrow_options arrow_options;
+    struct ArrowSchema arrow_schema;
+    struct ArrowArray arrow_array;
+    struct ArrowArrayView arrow_array_view;
+    
+    /* Legacy / Fallback result (kept for compatibility and error handling) */
+    duckdb_result res;
+
 	char	   *query;
 	TupleDesc	tupdesc;
-    AttInMetadata *attinmeta; /* Required for BuildTupleFromCStrings */
+    AttInMetadata *attinmeta; /* Required for BuildTupleFromCStrings (Legacy/Fallback) */
 	List	   *retrieved_attrs;
-	int64		rowidx;
-    int64       row_count;
+	
+    /* Iteration state */
+    int64_t     current_chunk_row_idx; /* Current row index within the current Arrow Array chunk */
+    int64_t     current_chunk_row_count; /* Total rows in the current Arrow Array chunk */
+    bool        arrow_initialized;
 } DuckDBFdwExecState;
 
 /* Exported functions */

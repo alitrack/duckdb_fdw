@@ -11,14 +11,16 @@
 #include "catalog/pg_type.h"
 #include "optimizer/clauses.h"
 #include "optimizer/restrictinfo.h"
+#include "utils/date.h"
+#include "utils/timestamp.h"
 
 PG_MODULE_MAGIC;
 
 static void
 duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid)
 {
-	DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *)palloc0(sizeof(DuckDBFdwRelationInfo));
-	baserel->fdw_private = (void *)fpinfo;
+    DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *)palloc0(sizeof(DuckDBFdwRelationInfo));
+    baserel->fdw_private = (void *)fpinfo;
     fpinfo->foreigntableid = foreigntableid;
     
     /* Initially assume base relations are shippable */
@@ -29,39 +31,37 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
                                 &fpinfo->remote_conds, &fpinfo->local_conds);
                                 
     pull_varattnos((Node *) baserel->reltarget->exprs, baserel->relid, &fpinfo->attrs_used);
-	baserel->rows = 1000;
+    baserel->rows = 1000;
 }
 
 static void
 duckdbGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid)
 {
-	add_path(baserel, (Path *)
-			 create_foreignscan_path(root, baserel, NULL, baserel->rows, 10, 20, NIL, baserel->lateral_relids, NULL, NIL));
+    add_path(baserel, (Path *)
+             create_foreignscan_path(root, baserel, NULL, baserel->rows, 10, 20, NIL, baserel->lateral_relids, NULL, NIL));
 }
 
 static ForeignScan *
 duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
-					 ForeignPath *best_path, List *tlist, List *scan_clauses,
-					 Plan *outer_plan)
+                     ForeignPath *best_path, List *tlist, List *scan_clauses,
+                     Plan *outer_plan)
 {
-	StringInfoData sql;
-	List *fdw_private;
-	List *retrieved_attrs = NIL;
+    StringInfoData sql;
+    List *fdw_private;
+    List *retrieved_attrs = NIL;
     List *params_list = NIL;
     List *deparse_tlist;
     DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *) baserel->fdw_private;
     Index       scanrelid;
     Oid         rel_oid = foreigntableid;
 
-	initStringInfo(&sql);
+    initStringInfo(&sql);
 
     if (IS_UPPER_REL(baserel))
     {
         /* Aggregation pushdown */
-        scanrelid = 0; /* Upper relations like aggregates don't scan a single relation ID directly in the conventional sense */
-        deparse_tlist = tlist; /* Use the target list provided by the planner */
-        
-        /* Retrieve correct table OID from fpinfo */
+        scanrelid = 0;
+        deparse_tlist = tlist;
         rel_oid = fpinfo->foreigntableid;
     }
     else
@@ -71,30 +71,26 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
         deparse_tlist = duckdb_build_tlist_to_deparse(baserel);
     }
 
-	duckdb_deparse_select_stmt_for_rel(&sql, root, baserel, deparse_tlist, fpinfo->remote_conds, NIL, false, false, false, &retrieved_attrs, &params_list);
+    duckdb_deparse_select_stmt_for_rel(&sql, root, baserel, deparse_tlist, fpinfo->remote_conds, NIL, false, false, false, &retrieved_attrs, &params_list);
 
-	fdw_private = list_make3(makeString(sql.data), retrieved_attrs, makeInteger(rel_oid));
+    fdw_private = list_make3(makeString(sql.data), retrieved_attrs, makeInteger(rel_oid));
     
-    /* 
-     * scan_clauses contains both remote and local conditions in RestrictInfo format.
-     * We must pass only local conditions to make_foreignscan for local evaluation.
-     */
-	return make_foreignscan(tlist, extract_actual_clauses(fpinfo->local_conds, false), scanrelid, NIL, fdw_private, (IS_UPPER_REL(baserel) ? tlist : NIL), NIL, outer_plan);
+    return make_foreignscan(tlist, extract_actual_clauses(fpinfo->local_conds, false), scanrelid, NIL, fdw_private, (IS_UPPER_REL(baserel) ? tlist : NIL), NIL, outer_plan);
 }
 
 static void
 duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 {
-	DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
-	ForeignScan *fsplan = (ForeignScan *)node->ss.ps.plan;
+    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
+    ForeignScan *fsplan = (ForeignScan *)node->ss.ps.plan;
     ForeignTable *table;
     Oid foreigntableid;
-	
-	node->fdw_state = (void *)festate;
+    
+    node->fdw_state = (void *)festate;
 
     if (fsplan->scan.scanrelid > 0)
     {
-	    festate->tupdesc = RelationGetDescr(node->ss.ss_currentRelation);
+        festate->tupdesc = RelationGetDescr(node->ss.ss_currentRelation);
         foreigntableid = RelationGetRelid(node->ss.ss_currentRelation);
     }
     else
@@ -104,85 +100,233 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
         foreigntableid = intVal(list_nth(fsplan->fdw_private, 2));
     }
 
-    /* Essential: Initialize metadata for all columns for BuildTupleFromCStrings */
-	festate->attinmeta = TupleDescGetAttInMetadata(festate->tupdesc);
-
+    festate->attinmeta = TupleDescGetAttInMetadata(festate->tupdesc);
     table = GetForeignTable(foreigntableid);
     festate->conn = duckdb_get_connection(GetForeignServer(table->serverid), false);
     
-	festate->query = strVal(list_nth(fsplan->fdw_private, 0));
-	festate->retrieved_attrs = (List *) list_nth(fsplan->fdw_private, 1);
+    festate->query = strVal(list_nth(fsplan->fdw_private, 0));
+    festate->retrieved_attrs = (List *) list_nth(fsplan->fdw_private, 1);
     
+    elog(DEBUG1, "duckdb_fdw: BeginForeignScan query: %s", festate->query);
+
+    /* Execute query using Standard Interface */
     if (duckdb_query(festate->conn, festate->query, &festate->res) == DuckDBError)
-        elog(ERROR, "duckdb_fdw: query failed: %s", duckdb_result_error(&festate->res));
+    {
+        const char *err = duckdb_result_error(&festate->res);
+        elog(ERROR, "duckdb_fdw: query failed: %s", err ? err : "unknown error");
+    }
+
+    /* Retrieve Arrow Options and Schema */
+    festate->arrow_options = duckdb_result_get_arrow_options(&festate->res);
+    
+    idx_t col_count = duckdb_column_count(&festate->res);
+    duckdb_logical_type *types = (duckdb_logical_type *) palloc(sizeof(duckdb_logical_type) * col_count);
+    const char **names = (const char **) palloc(sizeof(const char *) * col_count);
+    
+    for (idx_t i = 0; i < col_count; i++)
+    {
+        types[i] = duckdb_column_logical_type(&festate->res, i);
+        names[i] = duckdb_column_name(&festate->res, i);
+    }
+    
+    duckdb_error_data err = duckdb_to_arrow_schema(festate->arrow_options, types, names, col_count, &festate->arrow_schema);
+    if (err)
+    {
+        duckdb_destroy_error_data(&err);
+        elog(ERROR, "duckdb_fdw: failed to create arrow schema");
+    }
+    
+    for (idx_t i = 0; i < col_count; i++)
+        duckdb_destroy_logical_type(&types[i]);
+    pfree(types);
+    pfree(names);
+
+    festate->current_chunk_row_idx = 0;
+    festate->current_chunk_row_count = 0;
+    festate->arrow_initialized = true;
+}
+
+/* 
+ * Helper: Convert Arrow String to PostgreSQL Datum using its input function.
+ */
+static Datum
+duckdb_arrow_string_to_pg_datum(struct ArrowStringView sview, Oid pgtype, AttInMetadata *attinmeta, int attnum_idx)
+{
+    char *str = (char *) palloc(sview.size_bytes + 1);
+    memcpy(str, sview.data, sview.size_bytes);
+    str[sview.size_bytes] = '\0';
+    
+    Datum res;
+    if (pgtype == TEXTOID || pgtype == VARCHAROID || pgtype == BPCHAROID)
+    {
+        res = PointerGetDatum(cstring_to_text(str));
+    }
+    else
+    {
+        /* Handle DuckDB array format [1, 2] -> {1, 2} */
+        if (sview.size_bytes >= 2 && str[0] == '[' && str[sview.size_bytes - 1] == ']')
+        {
+             str[0] = '{';
+             str[sview.size_bytes - 1] = '}';
+        }
         
-    festate->rowidx = 0;
-    festate->row_count = duckdb_row_count(&festate->res);
+        res = InputFunctionCall(&attinmeta->attinfuncs[attnum_idx],
+                               str,
+                               attinmeta->attioparams[attnum_idx],
+                               attinmeta->atttypmods[attnum_idx]);
+    }
+    pfree(str);
+    return res;
 }
 
 static TupleTableSlot *
 duckdbIterateForeignScan(ForeignScanState *node)
 {
-	DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
-	TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
+    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
+    TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
     int i;
     ListCell *lc;
-    char **values;
-    HeapTuple tuple;
+    Datum *values = slot->tts_values;
+    bool *nulls = slot->tts_isnull;
 
-	ExecClearTuple(slot);
+    ExecClearTuple(slot);
 
-    if (festate->rowidx >= festate->row_count)
-        return slot;
+    while (festate->current_chunk_row_idx >= festate->current_chunk_row_count)
+    {
+        if (festate->arrow_array.release)
+        {
+            ArrowArrayViewReset(&festate->arrow_array_view);
+            ArrowArrayRelease(&festate->arrow_array);
+        }
 
-    /* 
-     * Robust Architecture:
-     * 1. Allocate an array of C-strings for ALL columns in the table.
-     *    Initialize to NULL (implies NULL value for un-retrieved columns).
-     */
-    values = (char **) palloc0(festate->tupdesc->natts * sizeof(char *));
+        duckdb_data_chunk chunk = duckdb_fetch_chunk(festate->res);
+        if (chunk == NULL || duckdb_data_chunk_get_size(chunk) == 0)
+        {
+            if (chunk) duckdb_destroy_data_chunk(&chunk);
+            return slot;
+        }
 
-    /* 
-     * 2. Fill in the values for the columns we actually retrieved from DuckDB.
-     */
+        duckdb_error_data err = duckdb_data_chunk_to_arrow(festate->arrow_options, chunk, &festate->arrow_array);
+        if (err)
+        {
+            duckdb_destroy_error_data(&err);
+            duckdb_destroy_data_chunk(&chunk);
+            elog(ERROR, "duckdb_fdw: failed to convert chunk to arrow array");
+        }
+        
+        duckdb_destroy_data_chunk(&chunk);
+
+        if (festate->arrow_array.release == NULL || festate->arrow_array.length == 0)
+             return slot;
+
+        if (ArrowArrayViewInitFromSchema(&festate->arrow_array_view, &festate->arrow_schema, NULL) != NANOARROW_OK)
+            elog(ERROR, "duckdb_fdw: failed to init arrow array view from schema");
+
+        if (ArrowArrayViewSetArray(&festate->arrow_array_view, &festate->arrow_array, NULL) != NANOARROW_OK)
+            elog(ERROR, "duckdb_fdw: failed to set arrow array view");
+
+        festate->current_chunk_row_count = festate->arrow_array.length;
+        festate->current_chunk_row_idx = 0;
+    }
+
     i = 0;
     foreach(lc, festate->retrieved_attrs)
     {
-        /* attnum_pg is 1-based */
         int attnum_pg = lfirst_int(lc);
+        if (attnum_pg <= 0) continue;
+
         int attnum_idx = attnum_pg - 1;
         Oid pgtype = festate->tupdesc->attrs[attnum_idx].atttypid;
+        struct ArrowArrayView *col_view = festate->arrow_array_view.children[i];
 
-        /* Extract safe, formatted C-string (handles [] -> {}) */
-        values[attnum_idx] = duckdb_extract_as_cstring(&festate->res, i, festate->rowidx, pgtype);
-        
+        if (ArrowArrayViewIsNull(col_view, festate->current_chunk_row_idx))
+        {
+            nulls[attnum_idx] = true;
+            values[attnum_idx] = (Datum)0;
+        }
+        else
+        {
+            nulls[attnum_idx] = false;
+            switch (col_view->storage_type)
+            {
+                case NANOARROW_TYPE_INT32:
+                {
+                    int32_t val = (int32_t)ArrowArrayViewGetIntUnsafe(col_view, festate->current_chunk_row_idx);
+                    if (pgtype == DATEOID)
+                        values[attnum_idx] = DateADTGetDatum(val - (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE));
+                    else
+                        values[attnum_idx] = Int32GetDatum(val);
+                    break;
+                }
+                case NANOARROW_TYPE_INT64:
+                {
+                    int64_t val = ArrowArrayViewGetIntUnsafe(col_view, festate->current_chunk_row_idx);
+                    if (pgtype == TIMESTAMPOID || pgtype == TIMESTAMPTZOID)
+                        values[attnum_idx] = TimestampGetDatum(val - ((POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * 86400 * 1000000L));
+                    else
+                        values[attnum_idx] = Int64GetDatum(val);
+                    break;
+                }
+                case NANOARROW_TYPE_BOOL:
+                {
+                    struct ArrowBufferView data = ArrowArrayViewGetBufferView(col_view, 1);
+                    bool val = ArrowBitGet(data.data.as_uint8, festate->current_chunk_row_idx);
+                    values[attnum_idx] = BoolGetDatum(val);
+                    break;
+                }
+                case NANOARROW_TYPE_DATE32:
+                {
+                    int32_t val = (int32_t)ArrowArrayViewGetIntUnsafe(col_view, festate->current_chunk_row_idx);
+                    values[attnum_idx] = DateADTGetDatum(val - (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE));
+                    break;
+                }
+                case NANOARROW_TYPE_TIMESTAMP:
+                {
+                    int64_t val = ArrowArrayViewGetIntUnsafe(col_view, festate->current_chunk_row_idx);
+                    values[attnum_idx] = TimestampGetDatum(val - ((POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * 86400 * 1000000L));
+                    break;
+                }
+                case NANOARROW_TYPE_FLOAT:
+                    values[attnum_idx] = Float4GetDatum((float)ArrowArrayViewGetDoubleUnsafe(col_view, festate->current_chunk_row_idx));
+                    break;
+                case NANOARROW_TYPE_DOUBLE:
+                    values[attnum_idx] = Float8GetDatum(ArrowArrayViewGetDoubleUnsafe(col_view, festate->current_chunk_row_idx));
+                    break;
+                case NANOARROW_TYPE_STRING:
+                case NANOARROW_TYPE_LARGE_STRING:
+                case NANOARROW_TYPE_STRING_VIEW:
+                    values[attnum_idx] = duckdb_arrow_string_to_pg_datum(ArrowArrayViewGetStringUnsafe(col_view, festate->current_chunk_row_idx), pgtype, festate->attinmeta, attnum_idx);
+                    break;
+                default:
+                    elog(ERROR, "duckdb_fdw: unhandled arrow type %d", col_view->storage_type);
+            }
+        }
         i++;
     }
 
-    /*
-     * 3. Let Postgres core build the tuple. 
-     *    This handles all parsing, memory alignment, and error checking safely.
-     */
-    tuple = BuildTupleFromCStrings(festate->attinmeta, values);
-
-    /*
-     * 4. Store the heap tuple in the slot.
-     *    'false' means the slot usually doesn't own the tuple memory, 
-     *    but since we allocated it in the short-lived PerTupleContext, 
-     *    it will be cleaned up automatically anyway.
-     */
-    ExecStoreHeapTuple(tuple, slot, false);
-
-    festate->rowidx++;
-	return slot;
+    ExecStoreVirtualTuple(slot);
+    festate->current_chunk_row_idx++;
+    return slot;
 }
 
 static void
 duckdbEndForeignScan(ForeignScanState *node)
 {
-	DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
-	if (festate)
-        duckdb_destroy_result(&festate->res);
+    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
+    if (festate)
+    {
+        if (festate->arrow_initialized)
+        {
+            if (festate->arrow_array.release)
+            {
+                ArrowArrayViewReset(&festate->arrow_array_view);
+                ArrowArrayRelease(&festate->arrow_array);
+            }
+            ArrowSchemaRelease(&festate->arrow_schema);
+            duckdb_destroy_arrow_options(&festate->arrow_options);
+            duckdb_destroy_result(&festate->res);
+        }
+    }
 }
 
 static void
@@ -194,63 +338,50 @@ duckdbReScanForeignScan(ForeignScanState *node)
 
 static void
 duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
-							RelOptInfo *input_rel, RelOptInfo *output_rel,
-							void *extra)
+                            RelOptInfo *input_rel, RelOptInfo *output_rel,
+                            void *extra)
 {
-	DuckDBFdwRelationInfo *fpinfo;
+    DuckDBFdwRelationInfo *fpinfo;
 
-	/*
-	 * If input_rel is not shippable, then output_rel cannot be either.
-	 */
-	if (input_rel == NULL || input_rel->fdw_private == NULL ||
-		!((DuckDBFdwRelationInfo *) input_rel->fdw_private)->pushdown_safe)
-		return;
+    if (input_rel == NULL || input_rel->fdw_private == NULL ||
+        !((DuckDBFdwRelationInfo *) input_rel->fdw_private)->pushdown_safe)
+        return;
 
-	if (stage != UPPERREL_GROUP_AGG)
-		return;
+    if (stage != UPPERREL_GROUP_AGG)
+        return;
 
-    elog(NOTICE, "duckdb_fdw: duckdbGetForeignUpperPaths entered for UPPERREL_GROUP_AGG");
-
-	fpinfo = (DuckDBFdwRelationInfo *) palloc0(sizeof(DuckDBFdwRelationInfo));
-	fpinfo->pushdown_safe = false;
+    fpinfo = (DuckDBFdwRelationInfo *) palloc0(sizeof(DuckDBFdwRelationInfo));
+    fpinfo->pushdown_safe = false;
     fpinfo->outerrel = input_rel;
     fpinfo->foreigntableid = ((DuckDBFdwRelationInfo *) input_rel->fdw_private)->foreigntableid;
-	output_rel->fdw_private = fpinfo;
+    output_rel->fdw_private = fpinfo;
 
-	/*
-	 * Determine whether the aggregation is shippability.
-	 */
-	if (duckdb_is_foreign_expr(root, output_rel, (Expr *) output_rel->reltarget->exprs))
-	{
-		fpinfo->pushdown_safe = true;
-		
-		/* Add path */
-		add_path(output_rel, (Path *)
-				 create_foreignscan_path(root, output_rel,
-										  output_rel->reltarget,
-										  output_rel->rows,
-										  10, 20, NIL,
-										  NULL, NULL, NIL));
-	}
+    if (duckdb_is_foreign_expr(root, output_rel, (Expr *) output_rel->reltarget->exprs))
+    {
+        fpinfo->pushdown_safe = true;
+        add_path(output_rel, (Path *)
+                 create_foreignscan_path(root, output_rel,
+                                          output_rel->reltarget,
+                                          output_rel->rows,
+                                          10, 20, NIL,
+                                          NULL, NULL, NIL));
+    }
 }
 
 PG_FUNCTION_INFO_V1(duckdb_fdw_handler);
 Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
 {
-	FdwRoutine *fdwroutine = makeNode(FdwRoutine);
-	fdwroutine->GetForeignRelSize = duckdbGetForeignRelSize;
-	fdwroutine->GetForeignPaths = duckdbGetForeignPaths;
-	fdwroutine->GetForeignPlan = duckdbGetForeignPlan;
-	fdwroutine->BeginForeignScan = duckdbBeginForeignScan;
-	fdwroutine->IterateForeignScan = duckdbIterateForeignScan;
-	fdwroutine->ReScanForeignScan = duckdbReScanForeignScan;
-	fdwroutine->EndForeignScan = duckdbEndForeignScan;
-    
-    /* NEW: Support for Pushdown & IMPORT */
+    FdwRoutine *fdwroutine = makeNode(FdwRoutine);
+    fdwroutine->GetForeignRelSize = duckdbGetForeignRelSize;
+    fdwroutine->GetForeignPaths = duckdbGetForeignPaths;
+    fdwroutine->GetForeignPlan = duckdbGetForeignPlan;
+    fdwroutine->BeginForeignScan = duckdbBeginForeignScan;
+    fdwroutine->IterateForeignScan = duckdbIterateForeignScan;
+    fdwroutine->ReScanForeignScan = duckdbReScanForeignScan;
+    fdwroutine->EndForeignScan = duckdbEndForeignScan;
     fdwroutine->GetForeignUpperPaths = duckdbGetForeignUpperPaths;
     fdwroutine->ImportForeignSchema = duckdb_import_foreign_schema;
-
-	PG_RETURN_POINTER(fdwroutine);
+    PG_RETURN_POINTER(fdwroutine);
 }
 
 PG_FUNCTION_INFO_V1(duckdb_fdw_version);
@@ -272,16 +403,13 @@ Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS) {
     char *key_id = text_to_cstring(PG_GETARG_TEXT_PP(2));
     char *secret = text_to_cstring(PG_GETARG_TEXT_PP(3));
     char *region = PG_ARGISNULL(4) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(4));
-    
     duckdb_connection conn = duckdb_get_connection(GetForeignServerByName(servername, false), false);
     StringInfoData sql;
     initStringInfo(&sql);
-    
     appendStringInfo(&sql, "CREATE OR REPLACE SECRET %s (TYPE S3, KEY_ID '%s', SECRET '%s'", 
                      quote_identifier(secret_name), key_id, secret);
     if (region) appendStringInfo(&sql, ", REGION '%s'", region);
     appendStringInfoString(&sql, ");");
-    
     duckdb_do_sql_command(conn, sql.data, NOTICE);
     PG_RETURN_VOID();
 }
