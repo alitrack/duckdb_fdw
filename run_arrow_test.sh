@@ -24,6 +24,12 @@ echo "Running Arrow Types Test..."
 echo "Running High Performance Insert Test..."
 /usr/lib/postgresql/15/bin/psql -p $PORT -h $HOST -d $DB -f examples/15_high_performance_insert.sql || true
 
+echo "Running Aggregate Pushdown Test..."
+/usr/lib/postgresql/15/bin/psql -p $PORT -h $HOST -d $DB -f examples/16_aggregate_pushdown.sql || true
+
+echo "Running Join Pushdown Test..."
+/usr/lib/postgresql/15/bin/psql -p $PORT -h $HOST -d $DB -f examples/17_join_pushdown_test.sql || true
+
 echo "Displaying Logfile (Errors):"
 grep -iE "Error|Fatal|Panic|Seg" logfile || true
 
