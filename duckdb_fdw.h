@@ -84,6 +84,11 @@ typedef struct DuckDBFdwExecState
     int64_t     current_chunk_row_idx; /* Current row index within the current Arrow Array chunk */
     int64_t     current_chunk_row_count; /* Total rows in the current Arrow Array chunk */
     bool        arrow_initialized;
+
+    /* Appender state for high-performance writes */
+    duckdb_appender appender;
+    int64_t     batch_row_count;
+    char       *table_name; /* Target table name */
 } DuckDBFdwExecState;
 
 /* Exported functions */

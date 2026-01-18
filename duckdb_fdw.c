@@ -13,6 +13,7 @@
 #include "optimizer/restrictinfo.h"
 #include "utils/date.h"
 #include "utils/timestamp.h"
+#include "utils/lsyscache.h"
 
 PG_MODULE_MAGIC;
 
@@ -368,6 +369,143 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
     }
 }
 
+static void
+duckdbAddForeignUpdateTargets(PlannerInfo *root,
+                              Index rtindex,
+                              RangeTblEntry *target_rte,
+                              Relation target_relation)
+{
+}
+
+static List *
+duckdbPlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index resultRelation, int subplan_index)
+{
+    return NIL;
+}
+
+static void
+duckdbBeginForeignModify(ModifyTableState *mtstate, ResultRelInfo *resultRelInfo, List *fdw_private, int subplan_index, int eflags)
+{
+    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
+    Relation rel = resultRelInfo->ri_RelationDesc;
+    duckdb_opt *options = duckdb_get_options(RelationGetRelid(rel));
+    ForeignTable *table = GetForeignTable(RelationGetRelid(rel));
+    
+    festate->conn = duckdb_get_connection(GetForeignServer(table->serverid), false);
+    festate->table_name = options->svr_table;
+    festate->tupdesc = RelationGetDescr(rel);
+    
+    /* Create Appender */
+    if (duckdb_appender_create(festate->conn, NULL, festate->table_name, &festate->appender) == DuckDBError)
+    {
+        const char *err = duckdb_appender_error(festate->appender);
+        elog(ERROR, "duckdb_fdw: failed to create appender for table %s: %s", festate->table_name, err ? err : "unknown error");
+    }
+    
+    festate->batch_row_count = 0;
+    resultRelInfo->ri_FdwState = (void *)festate;
+}
+
+static TupleTableSlot *
+duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
+{
+    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)resultRelInfo->ri_FdwState;
+    int natts = festate->tupdesc->natts;
+    
+    duckdb_appender_begin_row(festate->appender);
+    
+    for (int i = 0; i < natts; i++)
+    {
+        bool isnull;
+        Datum val = slot_getattr(slot, i + 1, &isnull);
+        Form_pg_attribute attr = TupleDescAttr(festate->tupdesc, i);
+        
+        if (isnull)
+        {
+             duckdb_append_null(festate->appender);
+        }
+        else
+        {
+            switch (attr->atttypid)
+            {
+                case INT4OID:
+                    duckdb_append_int32(festate->appender, DatumGetInt32(val));
+                    break;
+                case INT8OID:
+                    duckdb_append_int64(festate->appender, DatumGetInt64(val));
+                    break;
+                case FLOAT4OID:
+                    duckdb_append_float(festate->appender, DatumGetFloat4(val));
+                    break;
+                case FLOAT8OID:
+                    duckdb_append_double(festate->appender, DatumGetFloat8(val));
+                    break;
+                case BOOLOID:
+                    duckdb_append_bool(festate->appender, DatumGetBool(val));
+                    break;
+                case TEXTOID:
+                case VARCHAROID:
+                case BPCHAROID:
+                {
+                    char *s = TextDatumGetCString(val);
+                    duckdb_append_varchar(festate->appender, s);
+                    pfree(s);
+                    break;
+                }
+                default:
+                {
+                    /* Fallback to string representation using output function */
+                    Oid			typoutput;
+                    bool		typIsVarlena;
+                    char	   *s;
+
+                    getTypeOutputInfo(attr->atttypid, &typoutput, &typIsVarlena);
+                    s = OidOutputFunctionCall(typoutput, val);
+                    duckdb_append_varchar(festate->appender, s);
+                    pfree(s);
+                }
+            }
+        }
+    }
+    
+    duckdb_appender_end_row(festate->appender);
+    festate->batch_row_count++;
+    
+    /* Periodically flush */
+    if (festate->batch_row_count >= 1000)
+    {
+        duckdb_appender_flush(festate->appender);
+        festate->batch_row_count = 0;
+    }
+    
+    return slot;
+}
+
+static TupleTableSlot *
+duckdbExecForeignUpdate(EState *executor, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
+{
+    elog(ERROR, "duckdb_fdw: UPDATE not implemented yet using Appender API");
+    return slot;
+}
+
+static TupleTableSlot *
+duckdbExecForeignDelete(EState *executor, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
+{
+    elog(ERROR, "duckdb_fdw: DELETE not implemented yet using Appender API");
+    return slot;
+}
+
+static void
+duckdbEndForeignModify(EState *executor, ResultRelInfo *resultRelInfo)
+{
+    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)resultRelInfo->ri_FdwState;
+    if (festate && festate->appender)
+    {
+        duckdb_appender_close(festate->appender);
+        duckdb_appender_destroy(&festate->appender);
+    }
+}
+
 PG_FUNCTION_INFO_V1(duckdb_fdw_handler);
 Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
 {
@@ -381,6 +519,16 @@ Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
     fdwroutine->EndForeignScan = duckdbEndForeignScan;
     fdwroutine->GetForeignUpperPaths = duckdbGetForeignUpperPaths;
     fdwroutine->ImportForeignSchema = duckdb_import_foreign_schema;
+
+    /* Write Support */
+    fdwroutine->AddForeignUpdateTargets = duckdbAddForeignUpdateTargets;
+    fdwroutine->PlanForeignModify = duckdbPlanForeignModify;
+    fdwroutine->BeginForeignModify = duckdbBeginForeignModify;
+    fdwroutine->ExecForeignInsert = duckdbExecForeignInsert;
+    fdwroutine->ExecForeignUpdate = duckdbExecForeignUpdate;
+    fdwroutine->ExecForeignDelete = duckdbExecForeignDelete;
+    fdwroutine->EndForeignModify = duckdbEndForeignModify;
+
     PG_RETURN_POINTER(fdwroutine);
 }
 
