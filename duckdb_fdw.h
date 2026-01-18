@@ -112,6 +112,16 @@ extern List *duckdb_build_tlist_to_deparse(RelOptInfo *foreignrel);
 extern void duckdb_classify_conditions(PlannerInfo *root, RelOptInfo *baserel, List *input_conds, List **remote_conds, List **local_conds);
 extern bool duckdb_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel, Expr *expr);
 
+typedef struct foreign_glob_cxt
+{
+	PlannerInfo *root;			/* global planner state */
+	RelOptInfo *foreignrel;		/* the foreign relation we are planning for */
+	Relids		relids;			/* relids of base relations in the underlying
+								 * scan */
+} foreign_glob_cxt;
+
+extern bool duckdb_is_foreign_expr_full(PlannerInfo *root, RelOptInfo *baserel, Expr *expr, foreign_glob_cxt *glob_cxt);
+
 /* Missing symbols */
 extern Expr * duckdb_find_em_expr_for_rel(EquivalenceClass *ec, RelOptInfo *rel);
 extern Expr * duckdb_find_em_expr_for_input_target(PlannerInfo *root, EquivalenceClass *ec, PathTarget *target, RelOptInfo *fallbackRel);

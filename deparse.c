@@ -45,14 +45,6 @@
 /*
  * Global context for duckdb_foreign_expr_walker's search of an expression tree.
  */
-typedef struct foreign_glob_cxt
-{
-	PlannerInfo *root;			/* global planner state */
-	RelOptInfo *foreignrel;		/* the foreign relation we are planning for */
-	Relids		relids;			/* relids of base relations in the underlying
-								 * scan */
-} foreign_glob_cxt;
-
 /*
  * Local (per-tree-level) context for duckdb_foreign_expr_walker's search.
  * This is concerned with identifying collations used in the expression.
@@ -254,13 +246,30 @@ duckdb_is_foreign_expr(PlannerInfo *root,
 	foreign_loc_cxt loc_cxt;
 	DuckDBFdwRelationInfo *fpinfo;
 
+
     if (expr == NULL)
+    {
         return true;
+    }
 
-    if (baserel == NULL || baserel->fdw_private == NULL)
+    if (baserel == NULL)
+    {
         return false;
+    }
 
-    fpinfo = (DuckDBFdwRelationInfo *) (baserel->fdw_private);
+    if (baserel->fdw_private == NULL)
+    {
+        /* 
+         * If we are checking pushability during join planning, fdw_private 
+         * might not be set yet on the join relation. 
+         * We temporarily assume it is a DuckDB relation for the check.
+         */
+        fpinfo = NULL;
+    }
+    else
+    {
+        fpinfo = (DuckDBFdwRelationInfo *) (baserel->fdw_private);
+    }
 
 	/*
 	 * Check that the expression consists of nodes that are safe to execute
@@ -276,34 +285,53 @@ duckdb_is_foreign_expr(PlannerInfo *root,
 	 */
 	if (IS_UPPER_REL(baserel))
     {
-        if (fpinfo->outerrel == NULL)
+        if (fpinfo == NULL || fpinfo->outerrel == NULL)
+        {
             return false;
+        }
 		glob_cxt.relids = fpinfo->outerrel->relids;
     }
 	else
 		glob_cxt.relids = baserel->relids;
 
+    return duckdb_is_foreign_expr_full(root, baserel, expr, &glob_cxt);
+}
+
+bool
+duckdb_is_foreign_expr_full(PlannerInfo *root,
+					   RelOptInfo *baserel,
+					   Expr *expr,
+                       foreign_glob_cxt *glob_cxt)
+{
+	foreign_loc_cxt loc_cxt;
+
 	loc_cxt.collation = InvalidOid;
 	loc_cxt.state = FDW_COLLATE_NONE;
+
 
     /* If it's a list, check each element */
     if (IsA(expr, List))
     {
         ListCell *lc;
+        int count = 0;
         foreach(lc, (List *)expr)
         {
             Node *n = (Node *) lfirst(lc);
             if (IsA(n, TargetEntry))
                 n = (Node *) ((TargetEntry *) n)->expr;
             
-            if (!duckdb_foreign_expr_walker(n, &glob_cxt, &loc_cxt))
+            if (!duckdb_foreign_expr_walker(n, glob_cxt, &loc_cxt))
+            {
                 return false;
+            }
         }
     }
     else
     {
-        if (!duckdb_foreign_expr_walker((Node *) expr, &glob_cxt, &loc_cxt))
+        if (!duckdb_foreign_expr_walker((Node *) expr, glob_cxt, &loc_cxt))
+        {
             return false;
+        }
     }
 
 	/*
@@ -311,12 +339,14 @@ duckdb_is_foreign_expr(PlannerInfo *root,
 	 * foreign var, the expression can not be sent over.
 	 */
 	if (loc_cxt.state == FDW_COLLATE_UNSAFE)
+    {
 		return false;
+    }
 
     return true;
 }
 
-/*
+	/*
  * Returns true if given expr is something we'd have to send the value of
  * to the foreign server.
  *
@@ -341,17 +371,19 @@ duckdb_is_foreign_param(PlannerInfo *root,
 		case T_Var:
 			{
 				/* It would have to be sent unless it's a foreign Var */
-				Var		   *var = (Var *) expr;
-				DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *) (baserel->fdw_private);
-				Relids		relids;
-
-				if (IS_UPPER_REL(baserel))
-					relids = fpinfo->outerrel->relids;
-				else
-					relids = baserel->relids;
-
-				if (bms_is_member(var->varno, relids) && var->varlevelsup == 0)
-					return false;	/* foreign Var, so not a param */
+								Var		   *var = (Var *) expr;
+								DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *) (baserel->fdw_private);
+								Relids		relids;
+				
+								if (IS_UPPER_REL(baserel))
+									relids = fpinfo ? fpinfo->outerrel->relids : NULL;
+								else
+									relids = baserel->relids;
+				
+								if (bms_is_member(var->varno, relids) &&
+									var->varlevelsup == 0)
+									return false;
+					/* foreign Var, so not a param */
 				else
 					return true;	/* it'd have to be a param */
 				break;
@@ -414,7 +446,6 @@ duckdb_foreign_expr_walker(Node *node,
 	/* Need do nothing for empty subexpressions */
 	if (node == NULL)
     {
-        /* elog(NOTICE, "duckdb_fdw: walker encountered NULL node"); */
 		return true;
     }
 
@@ -423,35 +454,20 @@ duckdb_foreign_expr_walker(Node *node,
 	inner_cxt.state = FDW_COLLATE_NONE;
 
     /* Debug log */
-    elog(NOTICE, "duckdb_fdw: walker checking node type %d", (int)nodeTag(node));
 
 	switch (nodeTag(node))
 	{
 		case T_Var:
-            elog(NOTICE, "duckdb_fdw: walker checking T_Var");
 			{
 				Var		   *var = (Var *) node;
 
-				/*
-				 * If the Var is from the foreign table, we consider its
-				 * collation (if any) safe to use.  If it is from another
-				 * table, we treat its collation the same way as we would a
-				 * Param's collation, ie it's not safe for it to have a
-				 * non-default collation.
-				 */
 				if (bms_is_member(var->varno, glob_cxt->relids) &&
 					var->varlevelsup == 0)
 				{
-					/* Var belongs to foreign table */
-
-					/*
-					 * System columns (e.g. oid, ctid) should not be sent to
-					 * the remote, since we don't make any effort to ensure
-					 * that local and remote values match (tableoid, in
-					 * particular, almost certainly doesn't match).
-					 */
 					if (var->varattno < 0)
+                    {
 						return false;
+                    }
 
 					/* Else check the collation */
 					collation = var->varcollid;
@@ -460,24 +476,7 @@ duckdb_foreign_expr_walker(Node *node,
 				else
 				{
 					/* Var belongs to some other table */
-					collation = var->varcollid;
-					if (collation == InvalidOid ||
-						collation == DEFAULT_COLLATION_OID)
-					{
-						/*
-						 * It's noncollatable, or it's safe to combine with a
-						 * collatable foreign Var, so set state to NONE.
-						 */
-						state = FDW_COLLATE_NONE;
-					}
-					else
-					{
-						/*
-						 * Do not fail right away, since the Var might appear
-						 * in a collation-insensitive context.
-						 */
-						state = FDW_COLLATE_UNSAFE;
-					}
+					return false;
 				}
 			}
 			break;
