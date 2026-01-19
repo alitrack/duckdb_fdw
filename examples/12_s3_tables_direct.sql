@@ -10,8 +10,8 @@ SELECT duckdb_create_s3_secret('s3_tables_srv', '__my_secret__', 'YOUR_ACCESS_KE
 -- 2. Attach Resource
 SELECT duckdb_execute('s3_tables_srv', 'ATTACH IF NOT EXISTS ''arn:aws:s3tables:us-east-1:259911478022:bucket/iceberg-on-the-browser'' AS __my_resource__ (TYPE iceberg, ENDPOINT_TYPE ''s3_tables'')');
 
--- 3. Create View
-SELECT duckdb_execute('s3_tables_srv', 'CREATE OR REPLACE VIEW __my_view__ AS FROM __my_resource__.tpch10.part');
+-- 3. Create Table (More stable than view for cross-connection visibility)
+SELECT duckdb_execute('s3_tables_srv', 'CREATE OR REPLACE TABLE __my_view__ AS FROM __my_resource__.tpch10.part');
 
 -- 4. Map and Query
 CREATE FOREIGN TABLE my_view_fdw (

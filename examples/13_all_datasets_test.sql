@@ -4,7 +4,7 @@ CREATE EXTENSION IF NOT EXISTS duckdb_fdw;
 -- Scenario 1: Parquet, train_services
 DROP SERVER IF EXISTS srv_parquet_train CASCADE;
 CREATE SERVER srv_parquet_train FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:', extensions 'httpfs,parquet');
-SELECT duckdb_execute('srv_parquet_train', 'CREATE OR REPLACE VIEW __my_view__ AS SELECT * FROM read_parquet(''https://blobs.duckdb.org/train_services.parquet'')');
+SELECT duckdb_execute('srv_parquet_train', 'CREATE OR REPLACE TABLE __my_view__ AS SELECT * FROM read_parquet(''https://blobs.duckdb.org/train_services.parquet'')');
 CREATE FOREIGN TABLE view_parquet_train (
     station_name TEXT,
     train_number TEXT,
@@ -29,7 +29,7 @@ DROP SERVER IF EXISTS srv_iceberg CASCADE;
 CREATE SERVER srv_iceberg FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:', extensions 'httpfs,iceberg');
 SELECT duckdb_create_s3_secret('srv_iceberg', '__my_secret__', 'YOUR_ACCESS_KEY', 'YOUR_SECRET_KEY');
 SELECT duckdb_execute('srv_iceberg', 'ATTACH IF NOT EXISTS ''arn:aws:s3tables:us-east-1:259911478022:bucket/iceberg-on-the-browser'' AS __my_resource__ (TYPE iceberg, ENDPOINT_TYPE ''s3_tables'')');
-SELECT duckdb_execute('srv_iceberg', 'CREATE OR REPLACE VIEW __my_view__ AS FROM __my_resource__.tpch10.part');
+SELECT duckdb_execute('srv_iceberg', 'CREATE OR REPLACE TABLE __my_view__ AS FROM __my_resource__.tpch10.part');
 CREATE FOREIGN TABLE view_iceberg (
     p_partkey BIGINT,
     p_name TEXT

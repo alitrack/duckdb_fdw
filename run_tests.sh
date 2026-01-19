@@ -17,8 +17,8 @@ fi
 PSQL_BIN=${PSQL_BIN:-psql}
 PGPORT=${PGPORT:-5433}
 PGHOST=${PGHOST:-/tmp}
-PGUSER=${PGUSER:-postgres}
-PGDATABASE=${PGDATABASE:-postgres}
+PGUSER=${PGUSER:-$(whoami)}
+PGDATABASE=${PGDATABASE:-$(whoami)}
 
 echo -e "${BLUE}====================================================${NC}"
 echo -e "${BLUE}      pg_duck (DuckDB FDW) 自动化集成测试脚本        ${NC}"
@@ -85,14 +85,14 @@ for f in "${TEST_FILES[@]}"; do
     
     # 1. 构造 sed 替换序列
     # 使用 @ 作为分隔符，避免路径中的 / 冲突
-    SED_EXPR="s@\@PROJECT_PATH@@$CURRENT_DIR@g"
+    SED_EXPR="s@\\@PROJECT_PATH@$CURRENT_DIR@g"
     if [ ! -z "$S3_ACCESS_KEY" ]; then
         SED_EXPR="$SED_EXPR; s@YOUR_ACCESS_KEY@$S3_ACCESS_KEY@g; s@YOUR_SECRET_KEY@$S3_SECRET_KEY@g"
     fi
 
     # 2. 直接通过管道运行，不再产生临时文件
     # 使用 -f - 让 psql 从标准输入读取
-    CMD_BASE="$PSQL_BIN -p $PGPORT -h $PGHOST -d $PGDATABASE -U $PGUSER -f -"
+    CMD_BASE="$PSQL_BIN -v ON_ERROR_STOP=1 -p $PGPORT -h $PGHOST -d $PGDATABASE -U $PGUSER -f -"
 
     if [ "$VERBOSE" = true ]; then
         sed "$SED_EXPR" "$f" | $CMD_BASE

@@ -330,6 +330,18 @@ duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row
         default: {
             char *s = duckdb_value_varchar(&festate->res, col_idx, global_row);
             Datum res;
+            
+            /* Handle array format conversion: DuckDB [1,2] -> PG {1,2} */
+            if (pgtype > 0 && s && s[0] == '[' && s[strlen(s)-1] == ']')
+            {
+                char *p = s;
+                while (*p) {
+                    if (*p == '[') *p = '{';
+                    else if (*p == ']') *p = '}';
+                    p++;
+                }
+            }
+
             if (pgtype == TEXTOID || pgtype == VARCHAROID || pgtype == BPCHAROID)
                 res = PointerGetDatum(cstring_to_text(s));
             else {
@@ -733,6 +745,29 @@ Datum duckdb_execute(PG_FUNCTION_ARGS) {
     char *query = text_to_cstring(PG_GETARG_TEXT_PP(1));
     duckdb_connection conn = duckdb_get_connection(GetForeignServerByName(servername, false), false);
     duckdb_do_sql_command(conn, query, LOG);
+    PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(duckdb_create_s3_secret);
+Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS) {
+    char *servername = NameStr(*PG_GETARG_NAME(0));
+    char *secret_name = text_to_cstring(PG_GETARG_TEXT_PP(1));
+    char *key_id = text_to_cstring(PG_GETARG_TEXT_PP(2));
+    char *secret = text_to_cstring(PG_GETARG_TEXT_PP(3));
+    char *region = PG_ARGISNULL(4) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(4));
+    
+    duckdb_connection conn = duckdb_get_connection(GetForeignServerByName(servername, false), false);
+    
+    StringInfoData sql;
+    initStringInfo(&sql);
+    appendStringInfo(&sql, "CREATE OR REPLACE SECRET %s ( TYPE S3, KEY_ID '%s', SECRET '%s'", 
+                     secret_name, key_id, secret);
+    if (region)
+        appendStringInfo(&sql, ", REGION '%s'", region);
+    appendStringInfoString(&sql, " );");
+    
+    duckdb_do_sql_command(conn, sql.data, ERROR);
+    
     PG_RETURN_VOID();
 }
 

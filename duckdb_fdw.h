@@ -89,6 +89,7 @@ extern Datum duckdb_fdw_handler(PG_FUNCTION_ARGS);
 extern Datum duckdb_fdw_validator(PG_FUNCTION_ARGS);
 extern Datum duckdb_fdw_version(PG_FUNCTION_ARGS);
 extern Datum duckdb_execute(PG_FUNCTION_ARGS);
+extern Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS);
 extern List *duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid);
 extern duckdb_opt * duckdb_get_options(Oid foreigntableid);
 

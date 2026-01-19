@@ -1,4 +1,5 @@
 -- 03 Vector Support
+CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS duckdb_fdw;
 
 CREATE SERVER vec_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
