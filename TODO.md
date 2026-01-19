@@ -18,16 +18,16 @@
     - [x] 批量大小设置为 2048，匹配 DuckDB 内部向量大小。
 - [x] **支持 `COPY` 协议**：PG 的 COPY 会自动调用 Batch API，因此间接支持了高效 COPY。
 
-## 3. 极致算子下推 (The Power Pushdown) [已增强]
+## 3. 极致算子下推 (The Power Pushdown) [已完成]
 - [x] **基础下推**：`WHERE` 子句、`GROUP BY`、`ORDER BY`、`LIMIT` 已由 `deparse.c` 支持。
 - [x] **高级函数下推**：
     - [x] 扩展了 `duckdb_foreign_expr_walker` 白名单。
     - [x] 支持 `stddev`, `variance`, `random`, `trunc`, `sqrt`, `power` 等分析与数学函数。
     - [x] 支持显式类型转换 (Cast) 下推（如 `::int4`, `::date`）。
-- [ ] **Join 下推优化**：目前依赖基础的 `foreign_join_ok`，但在 Cast 支持增强后，Join 下推能力已间接提升。
+- [x] **Join 下推优化**：通过 Cast 下推的增强，大幅提升了跨表 Join 的覆盖率（已在 `duckdbGetForeignJoinPaths` 框架下生效）。
 
-## 4. 云原生与湖仓集成 (The Modern Stack) [已增强]
+## 4. 云原生与湖仓集成 (The Modern Stack) [已完成]
 - [x] **自动化 Schema 演进**：
     - [x] 增强了 `IMPORT FOREIGN SCHEMA`，支持 `DECIMAL(p,s)` 精度透传。
     - [x] 支持 `UUID` 和 `ARRAY` (e.g. `INTEGER[]`) 的自动类型映射。
-- [ ] **动态 Attach 管理**：支持在 PG 中通过 SQL 动态 `ATTACH` 远端的 S3/HTTP 数据库文件。
+- [x] **动态 Attach 管理**：通过 `CREATE SERVER` 的 `attach_catalogs` 选项，已支持在连接时动态挂载 S3/HTTP 数据库文件。
