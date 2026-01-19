@@ -16,13 +16,15 @@
 - [x] **实现批量写入缓存 (Batch Ingestion)**：
     - [x] 实现了 PG 14+ `GetForeignModifyBatchSize` 和 `ExecForeignBatchInsert` 钩子。
     - [x] 批量大小设置为 2048，匹配 DuckDB 内部向量大小。
-- [ ] **支持 `COPY` 协议**：PG 的 COPY 会自动调用 Batch API，因此间接支持了高效 COPY。
+- [x] **支持 `COPY` 协议**：PG 的 COPY 会自动调用 Batch API，因此间接支持了高效 COPY。
 
 ## 3. 极致算子下推 (The Power Pushdown) [进行中]
 - [x] **基础下推**：`WHERE` 子句、`GROUP BY`、`ORDER BY`、`LIMIT` 已由 `deparse.c` 支持。
 - [ ] **Join 下推优化**：需进一步完善 `duckdbGetForeignJoinPaths` 对复杂 Join 条件的判断。
 - [ ] **聚合函数覆盖**：增加对 `stddev`, `covar` 等高级统计函数的下推支持。
 
-## 4. 云原生与湖仓集成 (The Modern Stack)
-- [ ] **自动化 Schema 演进**：在 `IMPORT FOREIGN SCHEMA` 时，自动识别 Parquet 文件的 Metadata。
+## 4. 云原生与湖仓集成 (The Modern Stack) [已增强]
+- [x] **自动化 Schema 演进**：
+    - [x] 增强了 `IMPORT FOREIGN SCHEMA`，支持 `DECIMAL(p,s)` 精度透传。
+    - [x] 支持 `UUID` 和 `ARRAY` (e.g. `INTEGER[]`) 的自动类型映射。
 - [ ] **动态 Attach 管理**：支持在 PG 中通过 SQL 动态 `ATTACH` 远端的 S3/HTTP 数据库文件。

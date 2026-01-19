@@ -9,22 +9,55 @@
 #include "commands/defrem.h"
 #include "utils/builtins.h"
 
-static const char *
+static char *
 duckdb_map_type_name(const char *duck_type)
 {
+    /* Handle DECIMAL(p,s) */
+    if (strncmp(duck_type, "DECIMAL", 7) == 0)
+    {
+        /* Preserve precision/scale: DECIMAL(10,2) -> numeric(10,2) */
+        const char *paren = strchr(duck_type, '(');
+        if (paren)
+        {
+            char *ret = palloc(8 + strlen(paren) + 1);
+            sprintf(ret, "numeric%s", paren);
+            return ret;
+        }
+        return "numeric";
+    }
+    
+    if (strcmp(duck_type, "UUID") == 0) return "uuid";
+    if (strcmp(duck_type, "BLOB") == 0) return "bytea";
+    if (strcmp(duck_type, "BIT") == 0) return "bit";
+    
     if (strcmp(duck_type, "BOOLEAN") == 0) return "bool";
     if (strcmp(duck_type, "BIGINT") == 0) return "int8";
     if (strcmp(duck_type, "HUGEINT") == 0) return "numeric";
     if (strcmp(duck_type, "INTEGER") == 0) return "int4";
     if (strcmp(duck_type, "SMALLINT") == 0) return "int2";
+    if (strcmp(duck_type, "TINYINT") == 0) return "int2";
     if (strcmp(duck_type, "FLOAT") == 0) return "float4";
     if (strcmp(duck_type, "DOUBLE") == 0) return "float8";
     if (strcmp(duck_type, "DATE") == 0) return "date";
     if (strcmp(duck_type, "TIMESTAMP") == 0) return "timestamp";
+    if (strcmp(duck_type, "TIMESTAMPTZ") == 0) return "timestamptz";
     if (strcmp(duck_type, "JSON") == 0) return "jsonb";
     if (strcmp(duck_type, "VARCHAR") == 0) return "text";
-    if (strstr(duck_type, "DECIMAL")) return "numeric";
-    if (strstr(duck_type, "[]")) return "text[]";
+    
+    /* Handle Arrays: INTEGER[] -> int4[] */
+    size_t len = strlen(duck_type);
+    if (len > 2 && duck_type[len-2] == '[' && duck_type[len-1] == ']')
+    {
+        char *base = pstrdup(duck_type);
+        base[len-2] = '\0';
+        
+        char *pg_base = duckdb_map_type_name(base);
+        char *ret = psprintf("%s[]", pg_base);
+        
+        pfree(base);
+        return ret;
+    }
+
     return "text";
 }
 
