@@ -260,6 +260,29 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
 }
 
 static void
+duckdb_init_arrow_schema_from_result(duckdb_result *res, struct ArrowSchema *out_schema)
+{
+    idx_t col_count = duckdb_column_count(res);
+    duckdb_logical_type *types = (duckdb_logical_type *) palloc(sizeof(duckdb_logical_type) * col_count);
+    const char **names = (const char **) palloc(sizeof(char *) * col_count);
+    
+    for (idx_t i = 0; i < col_count; i++) {
+        types[i] = duckdb_column_logical_type(res, i);
+        names[i] = duckdb_column_name(res, i);
+    }
+    
+    /* Convert to Arrow Schema */
+    if (duckdb_to_arrow_schema(NULL, types, names, col_count, out_schema) != DuckDBSuccess)
+        elog(ERROR, "duckdb_fdw: schema conversion failed");
+        
+    for (idx_t i = 0; i < col_count; i++) {
+        duckdb_destroy_logical_type(&types[i]);
+    }
+    pfree(types);
+    pfree(names);
+}
+
+static void
 duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 {
     DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
@@ -282,6 +305,9 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
         if (node->ss.ss_ScanTupleSlot)
             festate->tupdesc = node->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
         
+        if (festate->tupdesc == NULL)
+            elog(ERROR, "duckdb_fdw: tuple descriptor is NULL in BeginForeignScan");
+
         /* rel_oid was stored as 3rd element, serverid as 4th */
         Oid serverid = intVal(list_nth(fsplan->fdw_private, 3));
         festate->conn = duckdb_get_connection(GetForeignServer(serverid), false);
@@ -291,18 +317,20 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
     festate->query = strVal(list_nth(fsplan->fdw_private, 0));
     festate->retrieved_attrs = (List *) list_nth(fsplan->fdw_private, 1);
     
-    elog(DEBUG1, "duckdb_fdw: BeginForeignScan Arrow query: %s", festate->query);
+    elog(DEBUG1, "duckdb_fdw: BeginForeignScan query: %s", festate->query);
 
-    /* Execute query using Arrow Interface */
-    if (duckdb_query_arrow(festate->conn, festate->query, &festate->arrow_result) == DuckDBError)
+    /* Execute query using Standard Interface */
+    if (duckdb_query(festate->conn, festate->query, &festate->res) == DuckDBError)
     {
-        elog(ERROR, "duckdb_fdw: arrow query failed");
+        const char *err = duckdb_result_error(&festate->res);
+        elog(ERROR, "duckdb_fdw: query failed: %s", err ? err : "unknown error");
     }
 
-    /* Retrieve Schema */
-    if (duckdb_query_arrow_schema(festate->arrow_result, (duckdb_arrow_schema *)&festate->arrow_schema) != DuckDBSuccess)
-        elog(ERROR, "duckdb_fdw: failed to retrieve arrow schema");
+    /* Convert Schema once */
+    duckdb_init_arrow_schema_from_result(&festate->res, &festate->arrow_schema);
 
+    /* Initialize state */
+    festate->current_chunk_idx = 0;
     festate->current_chunk_row_count = 0;
     festate->current_chunk_row_idx = 0;
     festate->arrow_initialized = true;
@@ -312,7 +340,7 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
  * Helper: Convert Arrow Value to Postgres Datum 
  */
 static Datum
-duckdb_arrow_val_to_datum(struct ArrowArrayView *view, int col_idx, int64_t row_idx, Oid pgtype, bool *is_null)
+duckdb_arrow_val_to_datum(struct ArrowArrayView *view, int col_idx, int64_t row_idx, Oid pgtype, int32_t typmod, bool *is_null)
 {
     struct ArrowArrayView *col_view = view->children[col_idx];
     
@@ -386,15 +414,12 @@ duckdb_arrow_val_to_datum(struct ArrowArrayView *view, int col_idx, int64_t row_
             if (ArrowDecimalAppendStringToBuffer(&decimal, &buffer) != NANOARROW_OK)
                 elog(ERROR, "duckdb_fdw: failed to convert decimal");
             
-            char *str = (char *)buffer.data; /* Not null terminated by AppendString? */
-            /* Nanoarrow docs say AppendStringToBuffer adds characters. We need to ensure null termination. */
             ArrowBufferAppendInt8(&buffer, 0); 
             
-            /* Use standard numeric_in. Oid for numeric is usually NUMERICOID */
             Datum num = DirectFunctionCall3(numeric_in,
                                             CStringGetDatum((char*)buffer.data),
                                             ObjectIdGetDatum(InvalidOid),
-                                            Int32GetDatum(-1));
+                                            Int32GetDatum(typmod));
             
             ArrowBufferReset(&buffer);
             return num;
@@ -428,32 +453,50 @@ duckdbIterateForeignScan(ForeignScanState *node)
             ArrowArrayViewReset(&festate->arrow_array_view);
             ArrowArrayRelease(&festate->arrow_array);
         }
+        
+        if (festate->current_chunk)
+        {
+            duckdb_destroy_data_chunk(&festate->current_chunk);
+            festate->current_chunk = NULL;
+        }
 
-        if (duckdb_query_arrow_array(festate->arrow_result, (duckdb_arrow_array *)&festate->arrow_array) != DuckDBSuccess ||
-            festate->arrow_array.release == NULL || festate->arrow_array.length == 0)
+        idx_t chunk_count = duckdb_result_chunk_count(festate->res);
+        if (festate->current_chunk_idx >= chunk_count)
         {
             return slot; /* End of scan */
         }
 
-        ArrowArrayViewInitFromSchema(&festate->arrow_array_view, &festate->arrow_schema, NULL);
+        festate->current_chunk = duckdb_result_get_chunk(festate->res, festate->current_chunk_idx);
+        if (!festate->current_chunk)
+            elog(ERROR, "duckdb_fdw: failed to get chunk %lu", (unsigned long)festate->current_chunk_idx);
+
+        /* Convert Chunk to Arrow Array. Resulting Array references festate->current_chunk. */
+        if (duckdb_data_chunk_to_arrow(NULL, festate->current_chunk, &festate->arrow_array) != DuckDBSuccess)
+             elog(ERROR, "duckdb_fdw: conversion from data chunk to arrow failed");
+
+        if (ArrowArrayViewInitFromSchema(&festate->arrow_array_view, &festate->arrow_schema, NULL) != NANOARROW_OK)
+            elog(ERROR, "duckdb_fdw: failed to initialize arrow array view from schema");
+
         if (ArrowArrayViewSetArray(&festate->arrow_array_view, &festate->arrow_array, NULL) != NANOARROW_OK)
             elog(ERROR, "duckdb_fdw: failed to set arrow array view");
 
         festate->current_chunk_row_count = festate->arrow_array.length;
         festate->current_chunk_row_idx = 0;
+        festate->current_chunk_idx++;
     }
 
     i = 0;
     foreach(lc, festate->retrieved_attrs)
     {
         int attnum_pg = lfirst_int(lc);
-        if (attnum_pg <= 0) { i++; continue; } /* Should not happen for valid columns */
+        if (attnum_pg <= 0) { i++; continue; } 
 
         int attnum_idx = attnum_pg - 1;
         Oid pgtype = festate->tupdesc->attrs[attnum_idx].atttypid;
+        int32_t typmod = festate->tupdesc->attrs[attnum_idx].atttypmod;
         
         bool is_null;
-        values[attnum_idx] = duckdb_arrow_val_to_datum(&festate->arrow_array_view, i, festate->current_chunk_row_idx, pgtype, &is_null);
+        values[attnum_idx] = duckdb_arrow_val_to_datum(&festate->arrow_array_view, i, festate->current_chunk_row_idx, pgtype, typmod, &is_null);
         nulls[attnum_idx] = is_null;
         
         i++;
@@ -477,13 +520,14 @@ duckdbEndForeignScan(ForeignScanState *node)
                 ArrowArrayViewReset(&festate->arrow_array_view);
                 ArrowArrayRelease(&festate->arrow_array);
             }
-            ArrowSchemaRelease(&festate->arrow_schema);
-            duckdb_destroy_arrow(&festate->arrow_result);
+            if (festate->arrow_schema.release)
+                ArrowSchemaRelease(&festate->arrow_schema);
+            
+            if (festate->current_chunk)
+                duckdb_destroy_data_chunk(&festate->current_chunk);
         }
-        else if (festate->res.internal_data)
-        {
-            duckdb_destroy_result(&festate->res);
-        }
+        
+        duckdb_destroy_result(&festate->res);
     }
 }
 

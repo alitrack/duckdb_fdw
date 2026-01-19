@@ -66,8 +66,9 @@ typedef struct DuckDBFdwExecState
 	duckdb_connection conn;
     
     /* Arrow Vectorized Execution Fields */
-	duckdb_arrow arrow_result;
     duckdb_arrow_options arrow_options;
+    idx_t current_chunk_idx;
+    duckdb_data_chunk current_chunk; /* Keep chunk alive for Arrow Array */
     struct ArrowSchema arrow_schema;
     struct ArrowArray arrow_array;
     struct ArrowArrayView arrow_array_view;
