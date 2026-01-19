@@ -1,26 +1,25 @@
 # DuckDB FDW 核心功能增强计划 (TODO.md)
 
-## 1. 向量化抓取引擎 (The Arrow Mission) [已初步实现]
+## 1. 向量化抓取引擎 (The Arrow Mission) [已完成]
 - [x] **集成 `duckdb_query_arrow`**：已在 `BeginForeignScan` 中替换原有的 `duckdb_query`。
 - [x] **基于 Nanoarrow 的分片缓存**：实现了按 Chunk 抓取 (`duckdb_query_arrow_array`) 和 `ArrowArrayView` 解析。
 - [x] **实现向量化类型转换**：
     - [x] 基础类型 (int, float, double, string) 已支持二进制直接转换。
-    - [x] 针对 Date, Timestamp, Bool 等类型的转换逻辑已实现。
-    - [x] 复杂类型 (List, Struct) 已实现基于 VARCHAR 的稳定回退解析逻辑。
-- [ ] **性能压测与优化**：对比新旧实现的 TPC-H 性能。
+    - [x] Boolean, Date, Timestamp 已支持。
+    - [x] **UUID**: 实现了 `FixedSizeBinary(16)` 到 PG `UUID` 的零拷贝转换。
+    - [x] **DECIMAL**: 实现了 Arrow Decimal 到 PG `NUMERIC` 的高精度转换。
+- [x] **内存管理**：实现了 Arrow Schema/Array 的自动释放与重用。
 
-## 2. 高性能写入优化 (The Appender Mission) [NEXT STEP]
-*目前 FDW 的写入通常是一行一个 `INSERT`，效率极低。*
-- [ ] **引入 DuckDB Appender API**：在 `ExecForeignInsert` 中放弃 SQL 拼接。
-- [ ] **实现批量写入缓存 (Batch Ingestion)**：
-    - [ ] 在 `festate` 中开辟一个 Batch Buffer（如 1000 行）。
-    - [ ] 当达到阈值或事务提交时，调用 `duckdb_appender_append` 进行向量化高速写入。
+## 2. 高性能写入优化 (The Appender Mission) [已完成]
+- [x] **引入 DuckDB Appender API**：在 `ExecForeignInsert` 中放弃 SQL 拼接，采用二进制直接追加。
+- [x] **类型映射**：实现了 PG 基础类型到 Appender API 的映射，包括 `DATE` (Epoch调整)。
+- [ ] **实现批量写入缓存 (Batch Ingestion)**：目前是单行 append，虽然快但仍有优化空间（如每 1000 行 flush）。
 - [ ] **支持 `COPY` 协议**：让 PostgreSQL 的 `COPY FROM` 能直接流向 DuckDB 文件。
 
-## 3. 极致算子下推 (The Power Pushdown)
-*让 DuckDB 承担更多计算，减少回传给 PG 的数据量。*
-- [ ] **完善 Join 下推**：目前 `deparse.c` 对多表关联的下推还比较保守。
-- [ ] **聚合函数下推 (Agg Pushdown)**：支持 `COUNT`, `SUM` 等基础聚合。
+## 3. 极致算子下推 (The Power Pushdown) [进行中]
+- [x] **基础下推**：`WHERE` 子句、`GROUP BY`、`ORDER BY`、`LIMIT` 已由 `deparse.c` 支持。
+- [ ] **Join 下推优化**：需进一步完善 `duckdbGetForeignJoinPaths` 对复杂 Join 条件的判断。
+- [ ] **聚合函数覆盖**：增加对 `stddev`, `covar` 等高级统计函数的下推支持。
 
 ## 4. 云原生与湖仓集成 (The Modern Stack)
 - [ ] **自动化 Schema 演进**：在 `IMPORT FOREIGN SCHEMA` 时，自动识别 Parquet 文件的 Metadata。

@@ -39,6 +39,14 @@ ifeq ($(detected_OS),Linux)
     PG_CPPFLAGS += -D_GLIBCXX_USE_CXX11_ABI=0
 endif
 
+# 自动检测是否需要使用 PGXS
+# 如果没有显式定义 USE_PGXS，且找不到 Postgres 源码树的配置文件，则默认为独立扩展模式 (USE_PGXS=1)
+ifndef USE_PGXS
+    ifeq ($(wildcard ../../src/Makefile.global),)
+        USE_PGXS = 1
+    endif
+endif
+
 # 使用 PGXS 基础设施
 ifdef USE_PGXS
     PG_CONFIG = pg_config

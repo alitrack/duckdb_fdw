@@ -8,29 +8,34 @@
 
 ---
 
-## 🚀 Key Enhancements (v2.0.0+)
+## 🚀 Key Enhancements (v2.0.0)
 
-- **DuckDB 1.x Native**: Fully compatible with the latest DuckDB core and extension ecosystem.
-- **Smarter Type Mapping**: Automatic identification and mapping for `DECIMAL`, `HUGEINT`, and `VARCHAR` during `IMPORT FOREIGN SCHEMA`.
-- **Improved Stability**: Fixed critical crashes (node type 210) during complex `WHERE` clause evaluation.
-- **Advanced Filter Pushdown**: Basic filter pushdown is now enabled, ensuring DuckDB only processes relevant data at the source.
-- **Enhanced Cloud Security**:
-    - New `duckdb_create_s3_secret()` function for easy credential management.
-    - Full support for **AWS S3 Tables** and Iceberg catalogs.
-- **Turbo Architecture**: Vectorized data transfer via Arrow C Data Interface and high-speed ingestion using the **Appender API**.
+- **Vectorized Read Engine**: Powered by the **Apache Arrow C Data Interface** and **Nanoarrow**. Replaced legacy row-based fetching with high-speed, vectorized data transfer (typically 2048 rows per chunk).
+- **High-Performance Ingestion**: Integrated DuckDB's **Appender API** for `INSERT` operations. Bypasses the SQL parser and string formatting, enabling binary-to-binary data injection.
+- **Native C API Integration**: Completely removed the SQLite compatibility layer. Built directly on the native DuckDB C API for maximum compatibility and future-proofing.
+- **Enhanced Type Support**: Full binary mapping for `BOOLEAN`, `DATE`, `TIMESTAMP`, `DECIMAL`, and `HUGEINT`. Handles epoch conversions (1970 vs 2000) automatically.
+- **Cloud Native**:
+    - Built-in support for **S3 Tables**, Iceberg, and Delta Lake.
+    - Integrated secret management via `duckdb_create_s3_secret()`.
+- **Intelligent Pushdown**: Supports filter and limit pushdown to minimize data movement between DuckDB and PostgreSQL.
 
 ## 📦 Installation
 
 ### Quick Build (Linux/macOS)
 
 ```bash
-# 1. Download latest DuckDB kernel
+# 1. Download DuckDB headers and library
 ./download_libduckdb.sh
 
-# 2. Build and Install
-make USE_PGXS=1
-sudo make install USE_PGXS=1
+# 2. Build and Install (USE_PGXS is auto-detected)
+make
+sudo make install
 ```
+
+### Requirements
+* PostgreSQL 13 - 18 (headers required)
+* DuckDB library (`libduckdb.so` or `libduckdb.dylib`) v1.0.0+
+* GCC or Clang with C11/C++11 support
 
 ## 🛠️ Usage
 

@@ -105,9 +105,12 @@ extern duckdb_connection duckdb_get_connection(ForeignServer *server, bool trunc
 
 /* Helper to get cleaned C-String for BuildTupleFromCStrings */
 extern char *duckdb_extract_as_cstring(duckdb_result *res, int col, uint64_t row, Oid pgtyp);
+extern Datum duckdb_convert_to_pg(Oid pgtyp, int pgtypmod, duckdb_result *res, int col, uint64_t row);
 
 /* Deparse functions */
 extern void duckdb_deparse_select_stmt_for_rel(StringInfo buf, PlannerInfo *root, RelOptInfo *rel, List *tlist, List *remote_conds, List *pathkeys, bool has_final_sort, bool has_limit, bool is_subquery, List **retrieved_attrs, List **params_list);
+extern void duckdb_deparse_direct_update_sql(StringInfo buf, PlannerInfo *root, Index rtindex, Relation rel, RelOptInfo *foreignrel, List *targetlist, List *targetAttrs, List *remote_conds, List **params_list, List **retrieved_attrs);
+extern void duckdb_deparse_direct_delete_sql(StringInfo buf, PlannerInfo *root, Index rtindex, Relation rel, RelOptInfo *foreignrel, List *remote_conds, List **params_list, List **retrieved_attrs);
 extern List *duckdb_build_tlist_to_deparse(RelOptInfo *foreignrel);
 extern void duckdb_classify_conditions(PlannerInfo *root, RelOptInfo *baserel, List *input_conds, List **remote_conds, List **local_conds);
 extern bool duckdb_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel, Expr *expr);
