@@ -64,6 +64,11 @@ TEST_FILES=(
     "examples/11_sf3_analytics.sql"
     "examples/12_s3_tables_direct.sql"
     "examples/13_all_datasets_test.sql"
+    "examples/14_arrow_vectorized_types.sql"
+    "examples/15_high_performance_insert.sql"
+    "examples/16_aggregate_pushdown.sql"
+    "examples/17_join_pushdown_test.sql"
+    "examples/18_high_performance_v2.sql"
 )
 
 # 2.5 加载本地环境变量 (.env)

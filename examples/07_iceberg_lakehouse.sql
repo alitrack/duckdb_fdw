@@ -8,7 +8,8 @@ CREATE SERVER iceberg_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
     s3_region 'us-east-1',
     s3_access_key_id 'YOUR_ACCESS_KEY',
     s3_secret_access_key 'YOUR_SECRET_KEY',
-    attach_catalogs '__my_resource__=arn:aws:s3tables:us-east-1:259911478022:bucket/iceberg-on-the-browser;type iceberg;authorization_type ''sigv4'';endpoint ''s3.us-east-1.amazonaws.com'''
+    s3_endpoint_type 's3_tables',
+    attach_catalogs '__my_resource__=arn:aws:s3tables:us-east-1:259911478022:bucket/iceberg-on-the-browser;type=iceberg'
 );
 
 -- Note: This is expected to fail in test environment due to fake credentials, 

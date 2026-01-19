@@ -63,6 +63,7 @@ typedef struct DuckDBFdwRelationInfo
 
 typedef struct DuckDBFdwExecState
 {
+	duckdb_database db;
 	duckdb_connection conn;
     duckdb_result res;
     duckdb_data_chunk current_chunk;
