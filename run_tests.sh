@@ -83,32 +83,24 @@ CURRENT_DIR=$(pwd)
 for f in "${TEST_FILES[@]}"; do
     echo -e "${BLUE}>>> 正在运行: $f${NC}"
     
-    # Create temporary test file
-    TEMP_SQL=$(mktemp)
-    cp "$f" "$TEMP_SQL"
-    
-    # Optional: If the SQL file uses a @PROJECT_PATH@ placeholder, replace it with the real current path.
-    # This is much cleaner than guessing hardcoded paths like /home/coder/...
-    perl -pi -e "s|\@PROJECT_PATH@|$CURRENT_DIR|g" "$TEMP_SQL"
-
+    # 1. 构造 sed 替换序列
+    # 使用 @ 作为分隔符，避免路径中的 / 冲突
+    SED_EXPR="s@\@PROJECT_PATH@@$CURRENT_DIR@g"
     if [ ! -z "$S3_ACCESS_KEY" ]; then
-        perl -pi -e "s/YOUR_ACCESS_KEY/$S3_ACCESS_KEY/g" "$TEMP_SQL"
-        perl -pi -e "s|YOUR_SECRET_KEY|$S3_SECRET_KEY|g" "$TEMP_SQL"
+        SED_EXPR="$SED_EXPR; s@YOUR_ACCESS_KEY@$S3_ACCESS_KEY@g; s@YOUR_SECRET_KEY@$S3_SECRET_KEY@g"
     fi
 
-    CMD="$PSQL_BIN -p $PGPORT -h $PGHOST -d $PGDATABASE -U $PGUSER -f $TEMP_SQL"
+    # 2. 直接通过管道运行，不再产生临时文件
+    # 使用 -f - 让 psql 从标准输入读取
+    CMD_BASE="$PSQL_BIN -p $PGPORT -h $PGHOST -d $PGDATABASE -U $PGUSER -f -"
 
     if [ "$VERBOSE" = true ]; then
-        # 详细模式
-        $CMD
+        sed "$SED_EXPR" "$f" | $CMD_BASE
         RET=$?
     else
-        # 静默模式
-        ERROR_MSG=$($CMD 2>&1 > /dev/null)
+        ERROR_MSG=$(sed "$SED_EXPR" "$f" | $CMD_BASE 2>&1 > /dev/null)
         RET=$?
     fi
-    
-    rm -f "$TEMP_SQL"
     
     if [ $RET -eq 0 ]; then
         echo -e "${GREEN}[OK] $f${NC}\n"
