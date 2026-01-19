@@ -13,8 +13,10 @@
 ## 2. 高性能写入优化 (The Appender Mission) [已完成]
 - [x] **引入 DuckDB Appender API**：在 `ExecForeignInsert` 中放弃 SQL 拼接，采用二进制直接追加。
 - [x] **类型映射**：实现了 PG 基础类型到 Appender API 的映射，包括 `DATE` (Epoch调整)。
-- [ ] **实现批量写入缓存 (Batch Ingestion)**：目前是单行 append，虽然快但仍有优化空间（如每 1000 行 flush）。
-- [ ] **支持 `COPY` 协议**：让 PostgreSQL 的 `COPY FROM` 能直接流向 DuckDB 文件。
+- [x] **实现批量写入缓存 (Batch Ingestion)**：
+    - [x] 实现了 PG 14+ `GetForeignModifyBatchSize` 和 `ExecForeignBatchInsert` 钩子。
+    - [x] 批量大小设置为 2048，匹配 DuckDB 内部向量大小。
+- [ ] **支持 `COPY` 协议**：PG 的 COPY 会自动调用 Batch API，因此间接支持了高效 COPY。
 
 ## 3. 极致算子下推 (The Power Pushdown) [进行中]
 - [x] **基础下推**：`WHERE` 子句、`GROUP BY`、`ORDER BY`、`LIMIT` 已由 `deparse.c` 支持。

@@ -649,14 +649,13 @@ duckdbBeginForeignModify(ModifyTableState *mtstate, ResultRelInfo *resultRelInfo
     resultRelInfo->ri_FdwState = (void *)festate;
 }
 
-static TupleTableSlot *
-duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
+static void
+duckdb_append_slot(duckdb_appender appender, TupleTableSlot *slot, TupleDesc tupdesc)
 {
-    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)resultRelInfo->ri_FdwState;
-    int natts = festate->tupdesc->natts;
+    int natts = tupdesc->natts;
     
-    if (duckdb_appender_begin_row(festate->appender) == DuckDBError)
-        elog(ERROR, "duckdb_fdw: appender begin row failed: %s", duckdb_appender_error(festate->appender));
+    if (duckdb_appender_begin_row(appender) == DuckDBError)
+        elog(ERROR, "duckdb_fdw: appender begin row failed: %s", duckdb_appender_error(appender));
 
     for (int i = 0; i < natts; i++)
     {
@@ -665,38 +664,38 @@ duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTab
 
         if (isnull)
         {
-            duckdb_append_null(festate->appender);
+            duckdb_append_null(appender);
             continue;
         }
 
-        Oid pgtype = festate->tupdesc->attrs[i].atttypid;
+        Oid pgtype = tupdesc->attrs[i].atttypid;
         
         switch (pgtype)
         {
             case INT2OID:
-                duckdb_append_int16(festate->appender, DatumGetInt16(val));
+                duckdb_append_int16(appender, DatumGetInt16(val));
                 break;
             case INT4OID:
-                duckdb_append_int32(festate->appender, DatumGetInt32(val));
+                duckdb_append_int32(appender, DatumGetInt32(val));
                 break;
             case INT8OID:
-                duckdb_append_int64(festate->appender, DatumGetInt64(val));
+                duckdb_append_int64(appender, DatumGetInt64(val));
                 break;
             case FLOAT4OID:
-                duckdb_append_float(festate->appender, DatumGetFloat4(val));
+                duckdb_append_float(appender, DatumGetFloat4(val));
                 break;
             case FLOAT8OID:
-                duckdb_append_double(festate->appender, DatumGetFloat8(val));
+                duckdb_append_double(appender, DatumGetFloat8(val));
                 break;
             case BOOLOID:
-                duckdb_append_bool(festate->appender, DatumGetBool(val));
+                duckdb_append_bool(appender, DatumGetBool(val));
                 break;
             case TEXTOID:
             case VARCHAROID:
             case BPCHAROID:
             {
                 char *s = TextDatumGetCString(val);
-                duckdb_append_varchar(festate->appender, s);
+                duckdb_append_varchar(appender, s);
                 pfree(s);
                 break;
             }
@@ -704,28 +703,58 @@ duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTab
             {
                 int32_t days_pg = DatumGetInt32(val);
                 duckdb_date d;
-                d.days = days_pg + 10957; /* 2000-01-01 - 1970-01-01 = 10957 days */
-                duckdb_append_date(festate->appender, d);
+                d.days = days_pg + 10957; 
+                duckdb_append_date(appender, d);
                 break;
             }
+            /* TODO: Add Timestamp support here */
             default:
             {
-                /* Fallback to string for unknown types */
                 Oid typoutput;
                 bool typIsVarlena;
                 getTypeOutputInfo(pgtype, &typoutput, &typIsVarlena);
                 char *s = OidOutputFunctionCall(typoutput, val);
-                duckdb_append_varchar(festate->appender, s);
+                duckdb_append_varchar(appender, s);
                 pfree(s);
             }
         }
     }
 
-    if (duckdb_appender_end_row(festate->appender) == DuckDBError)
-        elog(ERROR, "duckdb_fdw: appender end row failed: %s", duckdb_appender_error(festate->appender));
+    if (duckdb_appender_end_row(appender) == DuckDBError)
+        elog(ERROR, "duckdb_fdw: appender end row failed: %s", duckdb_appender_error(appender));
+}
 
-    festate->batch_row_count++;
+static int
+duckdbGetForeignModifyBatchSize(ResultRelInfo *resultRelInfo)
+{
+    return 2048; /* Match DuckDB vector size */
+}
+
+static TupleTableSlot **
+duckdbExecForeignBatchInsert(EState *executor,
+                             ResultRelInfo *resultRelInfo,
+                             TupleTableSlot **slots,
+                             TupleTableSlot **planSlots,
+                             int *numSlots)
+{
+    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)resultRelInfo->ri_FdwState;
+    int i;
+
+    for (i = 0; i < *numSlots; i++)
+    {
+        duckdb_append_slot(festate->appender, slots[i], festate->tupdesc);
+    }
     
+    festate->batch_row_count += *numSlots;
+    return slots;
+}
+
+static TupleTableSlot *
+duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
+{
+    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)resultRelInfo->ri_FdwState;
+    duckdb_append_slot(festate->appender, slot, festate->tupdesc);
+    festate->batch_row_count++;
     return slot;
 }
 
@@ -783,6 +812,8 @@ Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
     fdwroutine->ExecForeignUpdate = duckdbExecForeignUpdate;
     fdwroutine->ExecForeignDelete = duckdbExecForeignDelete;
     fdwroutine->EndForeignModify = duckdbEndForeignModify;
+    fdwroutine->GetForeignModifyBatchSize = duckdbGetForeignModifyBatchSize;
+    fdwroutine->ExecForeignBatchInsert = duckdbExecForeignBatchInsert;
 
     /* Direct Modify Support */
     fdwroutine->PlanDirectModify = duckdbPlanDirectModify;

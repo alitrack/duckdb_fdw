@@ -11,7 +11,9 @@
 ## 🚀 Key Enhancements (v2.0.0)
 
 - **Vectorized Read Engine**: Powered by the **Apache Arrow C Data Interface** and **Nanoarrow**. Replaced legacy row-based fetching with high-speed, vectorized data transfer (typically 2048 rows per chunk).
-- **High-Performance Ingestion**: Integrated DuckDB's **Appender API** for `INSERT` operations. Bypasses the SQL parser and string formatting, enabling binary-to-binary data injection.
+- **High-Performance Ingestion**: 
+    - Integrated DuckDB's **Appender API** for `INSERT` operations (Binary-to-Binary).
+    - Implemented PostgreSQL **Batch Insert API** (PG 14+), enabling turbo-charged `COPY FROM` performance.
 - **Native C API Integration**: Completely removed the SQLite compatibility layer. Built directly on the native DuckDB C API for maximum compatibility and future-proofing.
 - **Enhanced Type Support**: Full binary mapping for `BOOLEAN`, `DATE`, `TIMESTAMP`, `DECIMAL`, and `HUGEINT`. Handles epoch conversions (1970 vs 2000) automatically.
 - **Cloud Native**:
