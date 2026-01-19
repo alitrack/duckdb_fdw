@@ -386,6 +386,15 @@ duckdb_arrow_val_to_datum(struct ArrowArrayView *view, int col_idx, int64_t row_
             int64_t val = ArrowArrayViewGetIntUnsafe(col_view, row_idx);
             return Int64GetDatum(val - 946684800000000LL);
         }
+        case NANOARROW_TYPE_BINARY:
+        case NANOARROW_TYPE_LARGE_BINARY:
+        {
+            struct ArrowBufferView bview = ArrowArrayViewGetBytesUnsafe(col_view, row_idx);
+            bytea *res = (bytea *) palloc(VARHDRSZ + bview.size_bytes);
+            SET_VARSIZE(res, VARHDRSZ + bview.size_bytes);
+            memcpy(VARDATA(res), bview.data.data, bview.size_bytes);
+            return PointerGetDatum(res);
+        }
         case NANOARROW_TYPE_FIXED_SIZE_BINARY:
         {
             /* Check for UUID (16 bytes) */
@@ -425,8 +434,16 @@ duckdb_arrow_val_to_datum(struct ArrowArrayView *view, int col_idx, int64_t row_
             return num;
         }
         default:
+        {
+            /* 
+             * Fallback: For complex types or unhandled arrow types, 
+             * we could implement a string-based conversion using DuckDB's 
+             * materialized result if needed. 
+             * For v2.0, we report an error to ensure type-safe vectorized paths.
+             */
             elog(ERROR, "duckdb_fdw: unhandled arrow type %d for column %d", col_view->storage_type, col_idx);
             return (Datum)0;
+        }
     }
 }
 
