@@ -2,15 +2,16 @@
 set -e
 
 echo "=== 1. Building Extension ==="
-make USE_PGXS=1 clean
-make USE_PGXS=1
+make clean
+make
 
 echo "=== 2. Restarting Postgres ==="
-/usr/lib/postgresql/15/bin/pg_ctl -D test_db stop || true
-/usr/lib/postgresql/15/bin/pg_ctl -D test_db -l logfile -o "-p 5433 -k /tmp" start
+PG_BIN=$(pg_config --bindir)
+$PG_BIN/pg_ctl -D test_db stop || true
+$PG_BIN/pg_ctl -D test_db -l logfile -o "-p 5433 -k /tmp" start
 
 echo "=== 3. Running Full Functional Test ==="
-/usr/lib/postgresql/15/bin/psql -p 5433 -h /tmp -d postgres -c "
+$PG_BIN/psql -p 5433 -h /tmp -d postgres -c "
 -- Cleanup
 DROP FOREIGN TABLE IF EXISTS full_test CASCADE;
 DROP SERVER IF EXISTS duck_srv CASCADE;
@@ -22,7 +23,7 @@ CREATE FUNCTION duckdb_fdw_validator(text[], oid) RETURNS void AS '$(pwd)/duckdb
 CREATE FUNCTION duckdb_execute(server name, query text) RETURNS void AS '$(pwd)/duckdb_fdw.so' LANGUAGE C STRICT;
 
 CREATE FOREIGN DATA WRAPPER duckdb_fdw HANDLER duckdb_fdw_handler VALIDATOR duckdb_fdw_validator;
-CREATE SERVER duck_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '/tmp/work.db');
+CREATE SERVER duck_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '$(pwd)/test.db');
 
 -- Prepare complex data in DuckDB
 SELECT duckdb_execute('duck_srv', 'CREATE OR REPLACE TABLE full_data AS SELECT 

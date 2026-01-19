@@ -40,8 +40,8 @@ elif [ "$(uname)" == "Darwin" ]; then
     NPROC=$(sysctl -n hw.ncpu)
 fi
 
-make USE_PGXS=1 clean > /dev/null 2>&1
-make USE_PGXS=1 -j$NPROC > /dev/null 2>&1
+make clean > /dev/null 2>&1
+make -j$NPROC > /dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo -e "${RED}编译失败！请检查编译日志。${NC}"
     exit 1
@@ -87,9 +87,11 @@ for f in "${TEST_FILES[@]}"; do
     TEMP_SQL=$(mktemp)
     cp "$f" "$TEMP_SQL"
     
-    # Path replacement: Handle specific hardcoded path in examples
-    # Use perl for cross-platform replacement (sed varies on Mac/Linux)
+    # Path replacement: Handle specific hardcoded paths in examples
+    # This regex catches /home/coder/.../duckdb_fdw and replaces it with current dir
+    perl -pi -e "s|/home/coder/workspace/[^/]*/duckdb_fdw|$CURRENT_DIR|g" "$TEMP_SQL"
     perl -pi -e "s|/home/coder/workspace/pg_duck|$CURRENT_DIR|g" "$TEMP_SQL"
+    perl -pi -e "s|/home/coder/workspace/duckdb_fdw|$CURRENT_DIR|g" "$TEMP_SQL"
 
     if [ ! -z "$S3_ACCESS_KEY" ]; then
         perl -pi -e "s/YOUR_ACCESS_KEY/$S3_ACCESS_KEY/g" "$TEMP_SQL"
