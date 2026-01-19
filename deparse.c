@@ -596,7 +596,33 @@ duckdb_foreign_expr_walker(Node *node,
 					  || strcmp(opername, "replace") == 0
 					  || strcmp(opername, "round") == 0
 					  || strcmp(opername, "rtrim") == 0
-					  || strcmp(opername, "substr") == 0))
+					  || strcmp(opername, "substr") == 0
+                      /* Advanced Analytics */
+                      || strcmp(opername, "stddev") == 0
+                      || strcmp(opername, "stddev_pop") == 0
+                      || strcmp(opername, "stddev_samp") == 0
+                      || strcmp(opername, "variance") == 0
+                      || strcmp(opername, "var_pop") == 0
+                      || strcmp(opername, "var_samp") == 0
+                      /* Math */
+                      || strcmp(opername, "trunc") == 0
+                      || strcmp(opername, "random") == 0
+                      || strcmp(opername, "sqrt") == 0
+                      || strcmp(opername, "power") == 0
+                      || strcmp(opername, "mod") == 0
+                      || strcmp(opername, "exp") == 0
+                      || strcmp(opername, "sign") == 0
+                      || strcmp(opername, "ln") == 0
+                      || strcmp(opername, "log") == 0
+                      /* Type Casts */
+                      || strcmp(opername, "int4") == 0
+                      || strcmp(opername, "int8") == 0
+                      || strcmp(opername, "float4") == 0
+                      || strcmp(opername, "float8") == 0
+                      || strcmp(opername, "numeric") == 0
+                      || strcmp(opername, "text") == 0
+                      || strcmp(opername, "date") == 0
+                      || strcmp(opername, "timestamp") == 0))
 				{
 					return false;
 				}

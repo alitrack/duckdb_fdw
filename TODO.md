@@ -18,10 +18,13 @@
     - [x] 批量大小设置为 2048，匹配 DuckDB 内部向量大小。
 - [x] **支持 `COPY` 协议**：PG 的 COPY 会自动调用 Batch API，因此间接支持了高效 COPY。
 
-## 3. 极致算子下推 (The Power Pushdown) [进行中]
+## 3. 极致算子下推 (The Power Pushdown) [已增强]
 - [x] **基础下推**：`WHERE` 子句、`GROUP BY`、`ORDER BY`、`LIMIT` 已由 `deparse.c` 支持。
-- [ ] **Join 下推优化**：需进一步完善 `duckdbGetForeignJoinPaths` 对复杂 Join 条件的判断。
-- [ ] **聚合函数覆盖**：增加对 `stddev`, `covar` 等高级统计函数的下推支持。
+- [x] **高级函数下推**：
+    - [x] 扩展了 `duckdb_foreign_expr_walker` 白名单。
+    - [x] 支持 `stddev`, `variance`, `random`, `trunc`, `sqrt`, `power` 等分析与数学函数。
+    - [x] 支持显式类型转换 (Cast) 下推（如 `::int4`, `::date`）。
+- [ ] **Join 下推优化**：目前依赖基础的 `foreign_join_ok`，但在 Cast 支持增强后，Join 下推能力已间接提升。
 
 ## 4. 云原生与湖仓集成 (The Modern Stack) [已增强]
 - [x] **自动化 Schema 演进**：
