@@ -19,7 +19,11 @@
 - **Cloud Native**:
     - Built-in support for **S3 Tables**, Iceberg, and Delta Lake.
     - Integrated secret management via `duckdb_create_s3_secret()`.
-- **Intelligent Pushdown**: Supports filter and limit pushdown to minimize data movement between DuckDB and PostgreSQL.
+- **Intelligent Pushdown**: 
+    - Full support for filter, sorting, and limit pushdown.
+    - **Advanced Analytics**: Direct pushdown of statistical functions (`stddev`, `variance`, etc.) and mathematical functions (`sqrt`, `log`, etc.).
+    - **Cast Pushdown**: Enables complex joins and expressions by pushing down explicit type casts (`::int4`, `::date`, etc.) directly to DuckDB.
+- **Turbo Architecture**: Vectorized data transfer via Arrow C Data Interface and high-speed ingestion using the **Appender API**.
 
 ## 📦 Installation
 
