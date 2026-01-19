@@ -64,32 +64,24 @@ typedef struct DuckDBFdwRelationInfo
 typedef struct DuckDBFdwExecState
 {
 	duckdb_connection conn;
-    
-    /* Arrow Vectorized Execution Fields */
-    duckdb_arrow_options arrow_options;
-    idx_t current_chunk_idx;
-    duckdb_data_chunk current_chunk; /* Keep chunk alive for Arrow Array */
-    struct ArrowSchema arrow_schema;
-    struct ArrowArray arrow_array;
-    struct ArrowArrayView arrow_array_view;
-    
-    /* Legacy / Fallback result (kept for compatibility and error handling) */
     duckdb_result res;
-
+    duckdb_data_chunk current_chunk;
+    idx_t current_chunk_idx;
+    
 	char	   *query;
 	TupleDesc	tupdesc;
-    AttInMetadata *attinmeta; /* Required for BuildTupleFromCStrings (Legacy/Fallback) */
+    AttInMetadata *attinmeta;
 	List	   *retrieved_attrs;
 	
     /* Iteration state */
-    int64_t     current_chunk_row_idx; /* Current row index within the current Arrow Array chunk */
-    int64_t     current_chunk_row_count; /* Total rows in the current Arrow Array chunk */
-    bool        arrow_initialized;
+    int64_t     current_chunk_row_idx; 
+    int64_t     current_chunk_row_count; 
+    bool        is_started;
 
-    /* Appender state for high-performance writes */
+    /* Appender state */
     duckdb_appender appender;
     int64_t     batch_row_count;
-    char       *table_name; /* Target table name */
+    char       *table_name;
 } DuckDBFdwExecState;
 
 /* Exported functions */

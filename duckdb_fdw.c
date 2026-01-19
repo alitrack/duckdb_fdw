@@ -260,29 +260,6 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
 }
 
 static void
-duckdb_init_arrow_schema_from_result(duckdb_result *res, struct ArrowSchema *out_schema)
-{
-    idx_t col_count = duckdb_column_count(res);
-    duckdb_logical_type *types = (duckdb_logical_type *) palloc(sizeof(duckdb_logical_type) * col_count);
-    const char **names = (const char **) palloc(sizeof(char *) * col_count);
-    
-    for (idx_t i = 0; i < col_count; i++) {
-        types[i] = duckdb_column_logical_type(res, i);
-        names[i] = duckdb_column_name(res, i);
-    }
-    
-    /* Convert to Arrow Schema */
-    if (duckdb_to_arrow_schema(NULL, types, names, col_count, out_schema) != DuckDBSuccess)
-        elog(ERROR, "duckdb_fdw: schema conversion failed");
-        
-    for (idx_t i = 0; i < col_count; i++) {
-        duckdb_destroy_logical_type(&types[i]);
-    }
-    pfree(types);
-    pfree(names);
-}
-
-static void
 duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 {
     DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
@@ -301,14 +278,8 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
     }
     else
     {
-        /* Upper relation (Aggregate) or Join pushdown */
         if (node->ss.ss_ScanTupleSlot)
             festate->tupdesc = node->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
-        
-        if (festate->tupdesc == NULL)
-            elog(ERROR, "duckdb_fdw: tuple descriptor is NULL in BeginForeignScan");
-
-        /* rel_oid was stored as 3rd element, serverid as 4th */
         Oid serverid = intVal(list_nth(fsplan->fdw_private, 3));
         festate->conn = duckdb_get_connection(GetForeignServer(serverid), false);
     }
@@ -317,132 +288,57 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
     festate->query = strVal(list_nth(fsplan->fdw_private, 0));
     festate->retrieved_attrs = (List *) list_nth(fsplan->fdw_private, 1);
     
-    elog(DEBUG1, "duckdb_fdw: BeginForeignScan query: %s", festate->query);
-
-    /* Execute query using Standard Interface */
     if (duckdb_query(festate->conn, festate->query, &festate->res) == DuckDBError)
     {
-        const char *err = duckdb_result_error(&festate->res);
-        elog(ERROR, "duckdb_fdw: query failed: %s", err ? err : "unknown error");
+        elog(ERROR, "duckdb_fdw: query failed: %s", duckdb_result_error(&festate->res));
     }
 
-    /* Convert Schema once */
-    duckdb_init_arrow_schema_from_result(&festate->res, &festate->arrow_schema);
-
-    /* Initialize state */
     festate->current_chunk_idx = 0;
-    festate->current_chunk_row_count = 0;
     festate->current_chunk_row_idx = 0;
-    festate->arrow_initialized = true;
+    festate->current_chunk_row_count = duckdb_row_count(&festate->res);
+    festate->is_started = true;
 }
 
-/* 
- * Helper: Convert Arrow Value to Postgres Datum 
- */
 static Datum
-duckdb_arrow_val_to_datum(struct ArrowArrayView *view, int col_idx, int64_t row_idx, Oid pgtype, int32_t typmod, bool *is_null)
+duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row, Oid pgtype)
 {
-    struct ArrowArrayView *col_view = view->children[col_idx];
-    
-    if (ArrowArrayViewIsNull(col_view, row_idx))
-    {
-        *is_null = true;
+    if (duckdb_value_is_null(&festate->res, col_idx, global_row))
         return (Datum)0;
-    }
-    *is_null = false;
 
-    switch (col_view->storage_type)
+    switch (pgtype)
     {
-        case NANOARROW_TYPE_BOOL:
-            return BoolGetDatum(ArrowArrayViewGetIntUnsafe(col_view, row_idx));
-        case NANOARROW_TYPE_INT8:
-        case NANOARROW_TYPE_INT16:
-            return Int16GetDatum((int16_t)ArrowArrayViewGetIntUnsafe(col_view, row_idx));
-        case NANOARROW_TYPE_INT32:
-            return Int32GetDatum((int32_t)ArrowArrayViewGetIntUnsafe(col_view, row_idx));
-        case NANOARROW_TYPE_INT64:
-            return Int64GetDatum(ArrowArrayViewGetIntUnsafe(col_view, row_idx));
-        case NANOARROW_TYPE_FLOAT:
-            return Float4GetDatum((float)ArrowArrayViewGetDoubleUnsafe(col_view, row_idx));
-        case NANOARROW_TYPE_DOUBLE:
-            return Float8GetDatum(ArrowArrayViewGetDoubleUnsafe(col_view, row_idx));
-        case NANOARROW_TYPE_STRING:
-        case NANOARROW_TYPE_LARGE_STRING:
-        case NANOARROW_TYPE_STRING_VIEW:
-        {
-            struct ArrowStringView sview = ArrowArrayViewGetStringUnsafe(col_view, row_idx);
-            return PointerGetDatum(cstring_to_text_with_len(sview.data, sview.size_bytes));
+        case BOOLOID:
+            return BoolGetDatum(duckdb_value_boolean(&festate->res, col_idx, global_row));
+        case INT2OID:
+            return Int16GetDatum(duckdb_value_int16(&festate->res, col_idx, global_row));
+        case INT4OID:
+            return Int32GetDatum(duckdb_value_int32(&festate->res, col_idx, global_row));
+        case INT8OID:
+            return Int64GetDatum(duckdb_value_int64(&festate->res, col_idx, global_row));
+        case FLOAT4OID:
+            return Float4GetDatum(duckdb_value_float(&festate->res, col_idx, global_row));
+        case FLOAT8OID:
+            return Float8GetDatum(duckdb_value_double(&festate->res, col_idx, global_row));
+        case DATEOID:
+            return Int32GetDatum(duckdb_value_date(&festate->res, col_idx, global_row).days - 10957);
+        case UUIDOID: {
+            char *s = duckdb_value_varchar(&festate->res, col_idx, global_row);
+            Datum res = DirectFunctionCall1(uuid_in, CStringGetDatum(s));
+            duckdb_free(s);
+            return res;
         }
-        case NANOARROW_TYPE_DATE32:
-        {
-            /* Days since Unix Epoch (1970-01-01) */
-            int32_t days_unix = (int32_t)ArrowArrayViewGetIntUnsafe(col_view, row_idx);
-            /* Postgres Epoch is 2000-01-01. Offset is 10957 days. */
-            return Int32GetDatum(days_unix - 10957);
-        }
-        case NANOARROW_TYPE_TIMESTAMP:
-        {
-            /* Check unit. Assume Microseconds for now as PG uses Micros. */
-            int64_t val = ArrowArrayViewGetIntUnsafe(col_view, row_idx);
-            return Int64GetDatum(val - 946684800000000LL);
-        }
-        case NANOARROW_TYPE_BINARY:
-        case NANOARROW_TYPE_LARGE_BINARY:
-        {
-            struct ArrowBufferView bview = ArrowArrayViewGetBytesUnsafe(col_view, row_idx);
-            bytea *res = (bytea *) palloc(VARHDRSZ + bview.size_bytes);
-            SET_VARSIZE(res, VARHDRSZ + bview.size_bytes);
-            memcpy(VARDATA(res), bview.data.data, bview.size_bytes);
-            return PointerGetDatum(res);
-        }
-        case NANOARROW_TYPE_FIXED_SIZE_BINARY:
-        {
-            /* Check for UUID (16 bytes) */
-            if (col_view->layout.element_size_bits[1] == 128) 
-            {
-                struct ArrowBufferView bview = ArrowArrayViewGetBytesUnsafe(col_view, row_idx);
-                pg_uuid_t *uuid = (pg_uuid_t *) palloc(sizeof(pg_uuid_t));
-                memcpy(uuid->data, bview.data.data, 16);
-                return PointerGetDatum(uuid);
+        default: {
+            char *s = duckdb_value_varchar(&festate->res, col_idx, global_row);
+            Datum res;
+            if (pgtype == TEXTOID || pgtype == VARCHAROID || pgtype == BPCHAROID)
+                res = PointerGetDatum(cstring_to_text(s));
+            else {
+                Oid typinput, typioparam;
+                getTypeInputInfo(pgtype, &typinput, &typioparam);
+                res = OidInputFunctionCall(typinput, s, typioparam, -1);
             }
-            /* Fallback for other fixed binaries: treat as bytea */
-            struct ArrowBufferView bview = ArrowArrayViewGetBytesUnsafe(col_view, row_idx);
-            bytea *res = (bytea *) palloc(VARHDRSZ + bview.size_bytes);
-            SET_VARSIZE(res, VARHDRSZ + bview.size_bytes);
-            memcpy(VARDATA(res), bview.data.data, bview.size_bytes);
-            return PointerGetDatum(res);
-        }
-        case NANOARROW_TYPE_DECIMAL128:
-        case NANOARROW_TYPE_DECIMAL256:
-        {
-            struct ArrowDecimal decimal;
-            ArrowArrayViewGetDecimalUnsafe(col_view, row_idx, &decimal);
-            
-            struct ArrowBuffer buffer;
-            ArrowBufferInit(&buffer);
-            if (ArrowDecimalAppendStringToBuffer(&decimal, &buffer) != NANOARROW_OK)
-                elog(ERROR, "duckdb_fdw: failed to convert decimal");
-            
-            ArrowBufferAppendInt8(&buffer, 0); 
-            
-            Datum num = DirectFunctionCall3(numeric_in,
-                                            CStringGetDatum((char*)buffer.data),
-                                            ObjectIdGetDatum(InvalidOid),
-                                            Int32GetDatum(typmod));
-            
-            ArrowBufferReset(&buffer);
-            return num;
-        }
-        default:
-        {
-            /* 
-             * Fallback: For complex types or unhandled arrow types, 
-             * we could implement a string-based conversion using DuckDB's 
-             * materialized result if needed. 
-             * For v2.0, we report an error to ensure type-safe vectorized paths.
-             */
-            elog(ERROR, "duckdb_fdw: unhandled arrow type %d for column %d", col_view->storage_type, col_idx);
-            return (Datum)0;
+            duckdb_free(s);
+            return res;
         }
     }
 }
@@ -459,48 +355,8 @@ duckdbIterateForeignScan(ForeignScanState *node)
 
     ExecClearTuple(slot);
 
-    if (!festate->arrow_initialized)
-        elog(ERROR, "duckdb_fdw: arrow not initialized");
-
-    /* Fetch next chunk if needed */
-    while (festate->current_chunk_row_idx >= festate->current_chunk_row_count)
-    {
-        if (festate->arrow_array.release)
-        {
-            ArrowArrayViewReset(&festate->arrow_array_view);
-            ArrowArrayRelease(&festate->arrow_array);
-        }
-        
-        if (festate->current_chunk)
-        {
-            duckdb_destroy_data_chunk(&festate->current_chunk);
-            festate->current_chunk = NULL;
-        }
-
-        idx_t chunk_count = duckdb_result_chunk_count(festate->res);
-        if (festate->current_chunk_idx >= chunk_count)
-        {
-            return slot; /* End of scan */
-        }
-
-        festate->current_chunk = duckdb_result_get_chunk(festate->res, festate->current_chunk_idx);
-        if (!festate->current_chunk)
-            elog(ERROR, "duckdb_fdw: failed to get chunk %lu", (unsigned long)festate->current_chunk_idx);
-
-        /* Convert Chunk to Arrow Array. Resulting Array references festate->current_chunk. */
-        if (duckdb_data_chunk_to_arrow(NULL, festate->current_chunk, &festate->arrow_array) != DuckDBSuccess)
-             elog(ERROR, "duckdb_fdw: conversion from data chunk to arrow failed");
-
-        if (ArrowArrayViewInitFromSchema(&festate->arrow_array_view, &festate->arrow_schema, NULL) != NANOARROW_OK)
-            elog(ERROR, "duckdb_fdw: failed to initialize arrow array view from schema");
-
-        if (ArrowArrayViewSetArray(&festate->arrow_array_view, &festate->arrow_array, NULL) != NANOARROW_OK)
-            elog(ERROR, "duckdb_fdw: failed to set arrow array view");
-
-        festate->current_chunk_row_count = festate->arrow_array.length;
-        festate->current_chunk_row_idx = 0;
-        festate->current_chunk_idx++;
-    }
+    if (festate->current_chunk_row_idx >= festate->current_chunk_row_count)
+        return slot;
 
     i = 0;
     foreach(lc, festate->retrieved_attrs)
@@ -510,12 +366,9 @@ duckdbIterateForeignScan(ForeignScanState *node)
 
         int attnum_idx = attnum_pg - 1;
         Oid pgtype = festate->tupdesc->attrs[attnum_idx].atttypid;
-        int32_t typmod = festate->tupdesc->attrs[attnum_idx].atttypmod;
         
-        bool is_null;
-        values[attnum_idx] = duckdb_arrow_val_to_datum(&festate->arrow_array_view, i, festate->current_chunk_row_idx, pgtype, typmod, &is_null);
-        nulls[attnum_idx] = is_null;
-        
+        values[attnum_idx] = duckdb_value_to_pg(festate, i, festate->current_chunk_row_idx, pgtype);
+        nulls[attnum_idx] = duckdb_value_is_null(&festate->res, i, festate->current_chunk_row_idx);
         i++;
     }
 
@@ -530,20 +383,6 @@ duckdbEndForeignScan(ForeignScanState *node)
     DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
     if (festate)
     {
-        if (festate->arrow_initialized)
-        {
-            if (festate->arrow_array.release)
-            {
-                ArrowArrayViewReset(&festate->arrow_array_view);
-                ArrowArrayRelease(&festate->arrow_array);
-            }
-            if (festate->arrow_schema.release)
-                ArrowSchemaRelease(&festate->arrow_schema);
-            
-            if (festate->current_chunk)
-                duckdb_destroy_data_chunk(&festate->current_chunk);
-        }
-        
         duckdb_destroy_result(&festate->res);
     }
 }
