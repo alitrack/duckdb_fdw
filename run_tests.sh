@@ -83,15 +83,13 @@ CURRENT_DIR=$(pwd)
 for f in "${TEST_FILES[@]}"; do
     echo -e "${BLUE}>>> 正在运行: $f${NC}"
     
-    # 创建临时测试文件，替换占位符
+    # Create temporary test file
     TEMP_SQL=$(mktemp)
     cp "$f" "$TEMP_SQL"
     
-    # Path replacement: Handle specific hardcoded paths in examples
-    # This regex catches /home/coder/.../duckdb_fdw and replaces it with current dir
-    perl -pi -e "s|/home/coder/workspace/[^/]*/duckdb_fdw|$CURRENT_DIR|g" "$TEMP_SQL"
-    perl -pi -e "s|/home/coder/workspace/pg_duck|$CURRENT_DIR|g" "$TEMP_SQL"
-    perl -pi -e "s|/home/coder/workspace/duckdb_fdw|$CURRENT_DIR|g" "$TEMP_SQL"
+    # Optional: If the SQL file uses a @PROJECT_PATH@ placeholder, replace it with the real current path.
+    # This is much cleaner than guessing hardcoded paths like /home/coder/...
+    perl -pi -e "s|\@PROJECT_PATH@|$CURRENT_DIR|g" "$TEMP_SQL"
 
     if [ ! -z "$S3_ACCESS_KEY" ]; then
         perl -pi -e "s/YOUR_ACCESS_KEY/$S3_ACCESS_KEY/g" "$TEMP_SQL"
