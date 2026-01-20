@@ -20,6 +20,7 @@
 #include "catalog/pg_user_mapping.h"
 #include "miscadmin.h"
 #include "executor/executor.h"
+#include "commands/explain.h"
 
 PG_MODULE_MAGIC;
 
@@ -647,6 +648,15 @@ duckdbEndForeignModify(EState *executor, ResultRelInfo *resultRelInfo)
 {
 }
 
+static void
+duckdbExplainForeignScan(ForeignScanState *node, ExplainState *es)
+{
+    List       *fdw_private = ((ForeignScan *) node->ss.ps.plan)->fdw_private;
+    char       *sql = strVal(list_nth(fdw_private, 0));
+
+    ExplainPropertyText("Remote SQL", sql, es);
+}
+
 PG_FUNCTION_INFO_V1(duckdb_fdw_handler);
 Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
 {
@@ -661,6 +671,7 @@ Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
     fdwroutine->EndForeignScan = duckdbEndForeignScan;
     fdwroutine->GetForeignUpperPaths = duckdbGetForeignUpperPaths;
     fdwroutine->ImportForeignSchema = duckdb_import_foreign_schema;
+    fdwroutine->ExplainForeignScan = duckdbExplainForeignScan;
 
     /* Write Support */
     fdwroutine->AddForeignUpdateTargets = duckdbAddForeignUpdateTargets;

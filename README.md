@@ -74,6 +74,26 @@ CREATE SCHEMA remote_tpch;
 IMPORT FOREIGN SCHEMA "tpch" FROM SERVER duckdb_srv INTO remote_tpch;
 ```
 
+### 4. High-Speed S3 Tables (Lakehouse)
+`duckdb_fdw` v2.0+ handles **AWS S3 Tables** with zero configuration. It automatically detects `arn:aws:s3tables` URIs and injects the required `sigv4` authorization.
+
+```sql
+CREATE SERVER lakehouse_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
+    database ':memory:',
+    s3_region 'us-east-1',
+    s3_access_key_id 'YOUR_KEY',
+    s3_secret_access_key 'YOUR_SECRET',
+    -- Attach S3 Table catalog (endpoint and auth are auto-injected)
+    attach_catalogs 'my_res=arn:aws:s3tables:us-east-1:12345678:bucket/my-table;type iceberg'
+);
+
+-- Automated schema discovery using DESCRIBE
+IMPORT FOREIGN SCHEMA "my_res" FROM SERVER lakehouse_srv INTO public;
+
+-- Query natively with predicate pushdown
+SELECT * FROM part WHERE p_partkey = 1;
+```
+
 ## 📉 Feature Comparison
 
 | Feature | v1.x (Legacy) | v2.0+ (Native) |
