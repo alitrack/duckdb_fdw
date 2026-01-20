@@ -44,7 +44,7 @@ static struct DuckDBFdwOption valid_options[] =
     {"s3_use_ssl", ForeignServerRelationId},
     
     /* Catalogs */
-    {"attach_catalogs", ForeignServerRelationId}, /* format: 'name=uri;type=iceberg' */
+    {"attach_catalogs", ForeignServerRelationId}, /* format: 'name=uri;type iceberg' */
 
     /* Extensions */
     {"extensions", ForeignServerRelationId}, /* e.g., 'httpfs,spatial,iceberg' */

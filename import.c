@@ -115,68 +115,65 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
     else
     {
         /* 
-         * Use duckdb_columns() instead of information_schema to support attached catalogs.
-         * We match remote_schema against either database_name or schema_name.
+         * 1. Get list of tables first.
+         * 2. For each table, use DESCRIBE to get accurate column info.
          */
+        duckdb_result tables_res;
         appendStringInfo(&query, 
-            "SELECT database_name, schema_name, table_name, column_name, data_type "
-            "FROM duckdb_columns() "
-            "WHERE database_name = '%s' OR schema_name = '%s' "
-            "ORDER BY database_name, schema_name, table_name, column_index", 
+            "SELECT database_name, schema_name, table_name "
+            "FROM duckdb_tables() "
+            "WHERE database_name = '%s' OR schema_name = '%s'", 
             stmt->remote_schema, stmt->remote_schema);
 
-        if (duckdb_query(conn, query.data, &res) == DuckDBError)
-            elog(ERROR, "DuckDB: %s", duckdb_result_error(&res));
+        if (duckdb_query(conn, query.data, &tables_res) == DuckDBError)
+            elog(ERROR, "DuckDB: %s", duckdb_result_error(&tables_res));
 
-        char *curr_db = NULL;
-        char *curr_sch = NULL;
-        char *curr_tab = NULL;
-        StringInfoData ddl;
-        initStringInfo(&ddl);
-        bool first_col = true;
-
-        for (idx_t i = 0; i < duckdb_row_count(&res); i++)
+        for (idx_t i = 0; i < duckdb_row_count(&tables_res); i++)
         {
-            char *dbname = duckdb_value_varchar(&res, 0, i);
-            char *schname = duckdb_value_varchar(&res, 1, i);
-            char *tname = duckdb_value_varchar(&res, 2, i);
-            char *cname = duckdb_value_varchar(&res, 3, i);
-            char *ctype = duckdb_value_varchar(&res, 4, i);
+            char *dbname = duckdb_value_varchar(&tables_res, 0, i);
+            char *schname = duckdb_value_varchar(&tables_res, 1, i);
+            char *tname = duckdb_value_varchar(&tables_res, 2, i);
+            
+            StringInfoData ddl;
+            StringInfoData desc_query;
+            duckdb_result col_res;
 
-            if (curr_tab == NULL || strcmp(curr_tab, tname) != 0 || strcmp(curr_sch, schname) != 0 || strcmp(curr_db, dbname) != 0)
+            initStringInfo(&ddl);
+            initStringInfo(&desc_query);
+            
+            appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (", 
+                             quote_identifier(stmt->local_schema), quote_identifier(tname));
+            
+            appendStringInfo(&desc_query, "DESCRIBE SELECT * FROM %s.%s.%s", 
+                             quote_identifier(dbname), quote_identifier(schname), quote_identifier(tname));
+            
+            if (duckdb_query(conn, desc_query.data, &col_res) != DuckDBError)
             {
-                if (curr_tab)
+                bool first_col = true;
+                for (idx_t j = 0; j < duckdb_row_count(&col_res); j++)
                 {
-                    appendStringInfo(&ddl, ") SERVER %s OPTIONS (table '%s.%s.%s')", 
-                        quote_identifier(server->servername), curr_db, curr_sch, curr_tab);
-                    if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
-                        elog(ERROR, "SPI failed: %s", ddl.data);
+                    char *cname = duckdb_value_varchar(&col_res, 0, j);
+                    char *ctype = duckdb_value_varchar(&col_res, 1, j);
+                    
+                    if (!first_col) appendStringInfoString(&ddl, ", ");
+                    appendStringInfo(&ddl, "%s %s", quote_identifier(cname), duckdb_map_type_name(ctype));
+                    first_col = false;
+                    
+                    duckdb_free(cname); duckdb_free(ctype);
                 }
-                resetStringInfo(&ddl);
-                appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (", 
-                    quote_identifier(stmt->local_schema), quote_identifier(tname));
-                curr_db = pstrdup(dbname);
-                curr_sch = pstrdup(schname);
-                curr_tab = pstrdup(tname);
-                first_col = true;
+                appendStringInfo(&ddl, ") SERVER %s OPTIONS (table '%s.%s.%s')", 
+                                 quote_identifier(server->servername), dbname, schname, tname);
+                
+                if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
+                    elog(ERROR, "Failed to create foreign table: %s", ddl.data);
+                
+                duckdb_destroy_result(&col_res);
             }
             
-            if (!first_col) appendStringInfoString(&ddl, ", ");
-            appendStringInfo(&ddl, "%s %s", quote_identifier(cname), duckdb_map_type_name(ctype));
-            first_col = false;
-
-            duckdb_free(dbname); duckdb_free(schname); duckdb_free(tname); 
-            duckdb_free(cname); duckdb_free(ctype);
+            duckdb_free(dbname); duckdb_free(schname); duckdb_free(tname);
+            pfree(ddl.data); pfree(desc_query.data);
         }
-
-        if (curr_tab)
-        {
-            appendStringInfo(&ddl, ") SERVER %s OPTIONS (table '%s.%s.%s')", 
-                quote_identifier(server->servername), curr_db, curr_sch, curr_tab);
-            if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
-                elog(ERROR, "SPI failed: %s", ddl.data);
-        }
-        duckdb_destroy_result(&res);
+        duckdb_destroy_result(&tables_res);
     }
 
     SPI_finish();

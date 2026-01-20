@@ -915,8 +915,12 @@ duckdb_foreign_expr_walker(Node *node,
 					  || strcmp(opername, "max") == 0
 					  || strcmp(opername, "min") == 0
 					  || strcmp(opername, "array_agg") == 0
-					  || strcmp(opername, "stddev_pop") == 0
-					  || strcmp(opername, "stddev_samp") == 0
+                      || strcmp(opername, "stddev") == 0
+                      || strcmp(opername, "stddev_pop") == 0
+                      || strcmp(opername, "stddev_samp") == 0
+                      || strcmp(opername, "variance") == 0
+                      || strcmp(opername, "var_pop") == 0
+                      || strcmp(opername, "var_samp") == 0
 					  || strcmp(opername, "mode") == 0
 					  || strcmp(opername, "percentile_cont") == 0
 					  || strcmp(opername, "percentile_disc") == 0
@@ -2748,6 +2752,25 @@ duckdb_deparse_func_expr(FuncExpr *node, deparse_expr_cxt *context)
 	if (!HeapTupleIsValid(proctup))
 		elog(ERROR, "cache lookup failed for function %u", node->funcid);
 	procform = (Form_pg_proc) GETSTRUCT(proctup);
+
+    proname = NameStr(procform->proname);
+
+    /* Handle type casts that look like functions in PG */
+    if (strcmp(proname, "numeric") == 0 || 
+        strcmp(proname, "int4") == 0 || 
+        strcmp(proname, "int8") == 0 || 
+        strcmp(proname, "float4") == 0 || 
+        strcmp(proname, "float8") == 0 || 
+        strcmp(proname, "text") == 0 ||
+        strcmp(proname, "date") == 0 ||
+        strcmp(proname, "timestamp") == 0)
+    {
+        appendStringInfoString(buf, "CAST(");
+        duckdb_deparse_expr((Expr *) linitial(node->args), context);
+        appendStringInfo(buf, " AS %s)", (strcmp(proname, "text") == 0 ? "VARCHAR" : proname));
+        ReleaseSysCache(proctup);
+        return;
+    }
 
 	/* Translate PostgreSQL function into duckdb function */
 	proname = duckdb_replace_function(NameStr(procform->proname));

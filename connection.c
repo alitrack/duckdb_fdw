@@ -20,27 +20,12 @@ typedef struct ConnCacheEntry
 static HTAB *ConnectionHash = NULL;
 
 static void
-duckdb_execute_quiet(duckdb_connection conn, const char *sql)
-{
-    duckdb_result res;
-    if (duckdb_query(conn, sql, &res) == DuckDBError)
-    {
-        /* Silent failure for setup commands is standard for idempotent operations */
-    }
-    duckdb_destroy_result(&res);
-}
-
-/*
- * Advanced setup for Cloud-Native features: Extensions, Secrets, and Catalogs.
- */
-static void
 duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *server)
 {
     char *s3_region = NULL;
     char *s3_access_key = NULL;
     char *s3_secret_key = NULL;
     char *s3_endpoint = NULL;
-    char *s3_endpoint_type = NULL;
     bool s3_use_ssl = true;
     char *extensions = NULL;
     char *attach_catalogs = NULL;
@@ -54,7 +39,6 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         else if (strcmp(def->defname, "s3_access_key_id") == 0) s3_access_key = defGetString(def);
         else if (strcmp(def->defname, "s3_secret_access_key") == 0) s3_secret_key = defGetString(def);
         else if (strcmp(def->defname, "s3_endpoint") == 0) s3_endpoint = defGetString(def);
-        else if (strcmp(def->defname, "s3_endpoint_type") == 0) s3_endpoint_type = defGetString(def);
         else if (strcmp(def->defname, "s3_use_ssl") == 0) s3_use_ssl = defGetBoolean(def);
         else if (strcmp(def->defname, "extensions") == 0) extensions = defGetString(def);
         else if (strcmp(def->defname, "attach_catalogs") == 0) attach_catalogs = defGetString(def);
@@ -104,7 +88,6 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         appendStringInfo(&sql, "SECRET '%s', ", s3_secret_key);
         if (s3_region) appendStringInfo(&sql, "REGION '%s', ", s3_region);
         if (s3_endpoint) appendStringInfo(&sql, "ENDPOINT '%s', ", s3_endpoint);
-        if (s3_endpoint_type) appendStringInfo(&sql, "ENDPOINT_TYPE '%s', ", s3_endpoint_type);
         appendStringInfo(&sql, "USE_SSL %s );", s3_use_ssl ? "true" : "false");
         duckdb_do_sql_command(conn, sql.data, ERROR);
     }
@@ -120,20 +103,72 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
             char *uri = strchr(token, '=');
             if (uri)
             {
+                char *options = NULL;
                 *uri = '\0';
                 uri++;
-                for (char *p = uri; *p; p++) if (*p == ';') *p = ',';
-                
-                char *options = strchr(uri, ',');
+
+                /* Find start of options (first , or ;) */
+                char *p = uri;
+                while (*p) {
+                    if (*p == ',' || *p == ';') {
+                        options = p;
+                        break;
+                    }
+                    p++;
+                }
+
                 if (options)
                 {
                     *options = '\0';
                     options++;
-                    duckdb_do_sql_command(conn, psprintf("ATTACH '%s' AS %s (%s);", uri, name, options), ERROR);
+                    /* Normalize options: replace ; with , */
+                    for (char *opt_p = options; *opt_p; opt_p++) {
+                        if (*opt_p == ';') *opt_p = ',';
+                    }
+
+                    if (strncmp(uri, "arn:aws:s3tables", 16) == 0 && 
+                        !strstr(options, "authorization_type") && 
+                        !strstr(options, "endpoint_type")) {
+                        StringInfoData sql;
+                        initStringInfo(&sql);
+                        appendStringInfo(&sql, "ATTACH '%s' AS %s (%s, AUTHORIZATION_TYPE 'sigv4'", uri, name, options);
+                        
+                        if (s3_endpoint) {
+                            appendStringInfo(&sql, ", ENDPOINT '%s'", s3_endpoint);
+                        } else if (s3_region) {
+                            appendStringInfo(&sql, ", ENDPOINT 's3tables.%s.amazonaws.com'", s3_region);
+                        }
+                        
+                        appendStringInfoString(&sql, ");");
+                        
+                        duckdb_do_sql_command(conn, sql.data, ERROR);
+                        pfree(sql.data);
+                    }
+                    else {
+                        duckdb_do_sql_command(conn, psprintf("ATTACH '%s' AS %s (%s);", uri, name, options), ERROR);
+                    }
                 }
                 else
                 {
-                    duckdb_do_sql_command(conn, psprintf("ATTACH '%s' AS %s;", uri, name), ERROR);
+                    if (strncmp(uri, "arn:aws:s3tables", 16) == 0) {
+                        StringInfoData sql;
+                        initStringInfo(&sql);
+                        appendStringInfo(&sql, "ATTACH '%s' AS %s (AUTHORIZATION_TYPE 'sigv4'", uri, name);
+                        
+                        if (s3_endpoint) {
+                            appendStringInfo(&sql, ", ENDPOINT '%s'", s3_endpoint);
+                        } else if (s3_region) {
+                            appendStringInfo(&sql, ", ENDPOINT 's3tables.%s.amazonaws.com'", s3_region);
+                        }
+
+                        appendStringInfoString(&sql, ");");
+
+                        duckdb_do_sql_command(conn, sql.data, ERROR);
+                        pfree(sql.data);
+                    }
+                    else {
+                        duckdb_do_sql_command(conn, psprintf("ATTACH '%s' AS %s;", uri, name), ERROR);
+                    }
                 }
             }
             token = strtok(NULL, ",");
