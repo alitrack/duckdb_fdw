@@ -13,23 +13,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        pg_version: [15, 16, 17, 18]
+        os: [ubuntu-22.04]
         include:
-          # --- Linux ---
-          - os: ubuntu-22.04
-            arch: amd64
           - os: ubuntu-24.04-arm
             arch: arm64
-          
-          # --- macOS ---
-          - os: macos-13
-            arch: amd64
+            pg_version: 17
           - os: macos-14
             arch: arm64
-          
-          # --- Windows ---
-          # Windows support is experimental.
-          - os: windows-latest
-            arch: amd64
+            pg_version: 16
 
     steps:
     - uses: actions/checkout@v4
@@ -42,7 +34,7 @@ jobs:
         sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
         wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
         sudo apt-get update
-        sudo apt-get install -y postgresql-15 postgresql-server-dev-15 postgresql-15-pgvector curl unzip build-essential
+        sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }} curl unzip build-essential
         
         # Start Service
         sudo service postgresql start
@@ -51,26 +43,23 @@ jobs:
         
         # Configure User
         sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
-        sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
     # --- macOS Setup ---
     - name: Install Dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install postgresql@15
-        brew services start postgresql@15
+        brew install postgresql@${{ matrix.pg_version }}
+        brew services start postgresql@${{ matrix.pg_version }}
         
         # Link brew postgres path
-        echo "/usr/local/opt/postgresql@15/bin" >> $GITHUB_PATH
-        echo "/opt/homebrew/opt/postgresql@15/bin" >> $GITHUB_PATH
+        echo "/usr/local/opt/postgresql@${{ matrix.pg_version }}/bin" >> $GITHUB_PATH
+        echo "/opt/homebrew/opt/postgresql@${{ matrix.pg_version }}/bin" >> $GITHUB_PATH
         
         # Wait for service
         sleep 5
         
-        # Create user/db (Homebrew postgres usually runs as current user)
+        # Create user/db
         createdb postgres || true
-        # We might not need pgvector for macOS yet, or can brew install it
-        # brew install pgvector/pgvector/pgvector || true
 
     # --- Windows Setup ---
     - name: Install Dependencies (Windows)
