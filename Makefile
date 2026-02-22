@@ -39,7 +39,7 @@ ifeq ($(detected_OS),Linux)
     PG_CXXFLAGS = -std=c++11
     detected_arch := $(shell uname -m)
     ifeq ($(detected_arch),x86_64)
-        PG_CXXFLAGS = -std=c++11 -D_GLIBCXX_USE_CXX11_ABI=0
+        PG_CXXFLAGS = -std=c++11 -D_GLIBCXX_USE_CXX11_ABI=1
     endif
 endif
 
