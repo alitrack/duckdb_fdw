@@ -5,6 +5,12 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      test_profile:
+        description: "Test profile for run_tests.sh (core|integration|cloud|all)"
+        required: false
+        default: "core"
 
 jobs:
   test:
@@ -100,6 +106,7 @@ jobs:
         PGUSER: postgres
         PGHOST: localhost
         PGPORT: 5432
+        TEST_PROFILE: ${{ github.event.inputs.test_profile || 'core' }}
       run: |
         if [ "$RUNNER_OS" == "Windows" ]; then
            echo "Skipping tests on Windows."
@@ -116,4 +123,8 @@ jobs:
            unset PGPASSWORD
         fi
         
-        ./run_tests.sh
+        if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+          TEST_PROFILE="core"
+        fi
+
+        ./run_tests.sh --profile "$TEST_PROFILE"

@@ -9,9 +9,24 @@ NC='\033[0m' # No Color
 
 # 参数解析
 VERBOSE=false
-if [[ "$1" == "-v" || "$1" == "--verbose" ]]; then
-    VERBOSE=true
-fi
+PROFILE=${PROFILE:-core}
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        -p|--profile)
+            PROFILE="$2"
+            shift 2
+            ;;
+        *)
+            echo "未知参数: $1"
+            echo "用法: $0 [--verbose] [--profile core|integration|cloud|all]"
+            exit 1
+            ;;
+    esac
+done
 
 # Environment Configuration
 PSQL_BIN=${PSQL_BIN:-psql}
@@ -29,6 +44,7 @@ if [ "$VERBOSE" = true ]; then
 else
     echo -e "${YELLOW}模式: 静默执行 (使用 -v 开启详细输出)${NC}"
 fi
+echo -e "${YELLOW}测试档位: ${PROFILE}${NC}"
 
 # 1. 编译
 echo -e "\n${BLUE}[1/3] 编译并安装插件...${NC}"
@@ -46,24 +62,24 @@ if [ $? -ne 0 ]; then
     echo -e "${RED}编译失败！请检查编译日志。${NC}"
     exit 1
 fi
+if ! make install > /dev/null 2>&1; then
+    if command -v sudo > /dev/null && sudo -n make install > /dev/null 2>&1; then
+        :
+    else
+        echo -e "${RED}安装 duckdb_fdw 失败。请先执行: sudo make install${NC}"
+        exit 1
+    fi
+fi
 echo -e "${GREEN}编译完成。${NC}"
 
-# 2. 定义测试文件
-TEST_FILES=(
+# 2. 定义测试文件（分层）
+CORE_TEST_FILES=(
     "examples/01_quick_start.sql"
     "examples/01_full_demo.sql"
     "examples/02_parquet_scan.sql"
     "examples/02_complex_types.sql"
     "examples/03_vector_support.sql"
-    "examples/05_cloud_secret.sql"
     "examples/06_import_schema.sql"
-    "examples/07_iceberg_lakehouse.sql"
-    "examples/08_ducklake_attach.sql"
-    "examples/09_ducklake_import.sql"
-    "examples/10_iceberg_direct_scan.sql"
-    "examples/11_sf3_analytics.sql"
-    "examples/12_s3_tables_direct.sql"
-    "examples/13_all_datasets_test.sql"
     "examples/14_arrow_vectorized_types.sql"
     "examples/15_high_performance_insert.sql"
     "examples/16_aggregate_pushdown.sql"
@@ -71,10 +87,67 @@ TEST_FILES=(
     "examples/18_high_performance_v2.sql"
 )
 
+INTEGRATION_TEST_FILES=(
+    "examples/07_iceberg_lakehouse.sql"
+    "examples/08_ducklake_attach.sql"
+    "examples/09_ducklake_import.sql"
+    "examples/10_iceberg_direct_scan.sql"
+    "examples/11_sf3_analytics.sql"
+)
+
+CLOUD_TEST_FILES=(
+    "examples/05_cloud_secret.sql"
+    "examples/12_s3_tables_direct.sql"
+    "examples/13_all_datasets_test.sql"
+)
+
+TEST_FILES=()
+case "$PROFILE" in
+    core)
+        TEST_FILES=("${CORE_TEST_FILES[@]}")
+        ;;
+    integration)
+        TEST_FILES=("${INTEGRATION_TEST_FILES[@]}")
+        ;;
+    cloud)
+        TEST_FILES=("${CLOUD_TEST_FILES[@]}")
+        ;;
+    all)
+        TEST_FILES=("${CORE_TEST_FILES[@]}" "${INTEGRATION_TEST_FILES[@]}" "${CLOUD_TEST_FILES[@]}")
+        ;;
+    *)
+        echo -e "${RED}无效测试档位: ${PROFILE} (可选: core|integration|cloud|all)${NC}"
+        exit 1
+        ;;
+esac
+
+# 2.2 可选依赖检查（例如 pgvector）
+if [[ "$PROFILE" == "core" || "$PROFILE" == "all" ]]; then
+    PG_SHAREDIR=$(pg_config --sharedir 2>/dev/null)
+    VECTOR_CONTROL_FILE="$PG_SHAREDIR/extension/vector.control"
+    if [[ ! -f "$VECTOR_CONTROL_FILE" ]]; then
+        echo -e "${YELLOW}未检测到 pgvector，跳过 examples/03_vector_support.sql${NC}"
+        FILTERED_TEST_FILES=()
+        for f in "${TEST_FILES[@]}"; do
+            if [[ "$f" != "examples/03_vector_support.sql" ]]; then
+                FILTERED_TEST_FILES+=("$f")
+            fi
+        done
+        TEST_FILES=("${FILTERED_TEST_FILES[@]}")
+    fi
+fi
+
 # 2.5 加载本地环境变量 (.env)
 if [ -f .env ]; then
     export $(grep -v '^#' .env | xargs)
     echo -e "${YELLOW}已加载本地 .env 凭证进行测试。${NC}"
+fi
+
+if [[ "$PROFILE" == "cloud" || "$PROFILE" == "all" ]]; then
+    if [[ -z "${S3_ACCESS_KEY:-}" || -z "${S3_SECRET_KEY:-}" ]]; then
+        echo -e "${RED}cloud 档位需要 S3_ACCESS_KEY/S3_SECRET_KEY 环境变量。${NC}"
+        exit 1
+    fi
 fi
 
 # 3. 运行测试
@@ -125,7 +198,7 @@ echo "----------------------------------------------------"
 if [ $SUCCESS_COUNT -eq $TOTAL_COUNT ]; then
     echo -e "${GREEN}全部测试通过! ($SUCCESS_COUNT/$TOTAL_COUNT)${NC}"
 else
-    echo -e "${RED}部分测试失败 ($SUCCESS_COUNT/$TOTAL_COUNT)。${NC}"
+    echo -e "${RED}部分测试失败 (通过 $SUCCESS_COUNT/$TOTAL_COUNT)。${NC}"
     exit 1
 fi
 echo "----------------------------------------------------"

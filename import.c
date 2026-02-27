@@ -25,11 +25,11 @@ duckdb_map_type_name(const char *duck_type)
         }
         return "numeric";
     }
-    
+
     if (strcmp(duck_type, "UUID") == 0) return "uuid";
     if (strcmp(duck_type, "BLOB") == 0) return "bytea";
     if (strcmp(duck_type, "BIT") == 0) return "bit";
-    
+
     if (strcmp(duck_type, "BOOLEAN") == 0) return "bool";
     if (strcmp(duck_type, "BIGINT") == 0) return "int8";
     if (strcmp(duck_type, "HUGEINT") == 0) return "numeric";
@@ -43,17 +43,17 @@ duckdb_map_type_name(const char *duck_type)
     if (strcmp(duck_type, "TIMESTAMPTZ") == 0) return "timestamptz";
     if (strcmp(duck_type, "JSON") == 0) return "jsonb";
     if (strcmp(duck_type, "VARCHAR") == 0) return "text";
-    
+
     /* Handle Arrays: INTEGER[] -> int4[] */
     size_t len = strlen(duck_type);
     if (len > 2 && duck_type[len-2] == '[' && duck_type[len-1] == ']')
     {
         char *base = pstrdup(duck_type);
         base[len-2] = '\0';
-        
+
         char *pg_base = duckdb_map_type_name(base);
         char *ret = psprintf("%s[]", pg_base);
-        
+
         pfree(base);
         return ret;
     }
@@ -77,25 +77,32 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
         elog(ERROR, "SPI_connect failed");
 
     initStringInfo(&query);
-    if (is_file)
-    {
-        StringInfoData ddl;
-        char *tablename;
-        char *last_slash = strrchr(stmt->remote_schema, '/');
-        char *filename = last_slash ? last_slash + 1 : stmt->remote_schema;
+	    if (is_file)
+	    {
+	        StringInfoData ddl;
+			char *remote_schema_lit;
+			char *remote_schema_pg_lit;
+	        char *tablename;
+	        char *last_slash = strrchr(stmt->remote_schema, '/');
+	        char *filename = last_slash ? last_slash + 1 : stmt->remote_schema;
 
         tablename = pstrdup(filename);
         char *dot = strrchr(tablename, '.');
         if (dot) *dot = '\0';
 
-        initStringInfo(&ddl);
-        appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (", 
-                         quote_identifier(stmt->local_schema),
-                         quote_identifier(tablename));
+	        initStringInfo(&ddl);
+	        appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (",
+	                         quote_identifier(stmt->local_schema),
+	                         quote_identifier(tablename));
 
-        appendStringInfo(&query, "DESCRIBE SELECT * FROM read_parquet('%s')", stmt->remote_schema);
-        if (duckdb_query(conn, query.data, &res) == DuckDBError)
-            elog(ERROR, "DuckDB: %s", duckdb_result_error(&res));
+			if (!duckdb_fdw_is_safe_sql_fragment(stmt->remote_schema))
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+						 errmsg("remote schema contains unsafe SQL fragment")));
+			remote_schema_lit = duckdb_fdw_quote_literal(stmt->remote_schema);
+	        appendStringInfo(&query, "DESCRIBE SELECT * FROM read_parquet(%s)", remote_schema_lit);
+	        if (duckdb_query(conn, query.data, &res) == DuckDBError)
+	            elog(ERROR, "DuckDB: %s", duckdb_result_error(&res));
 
         for (idx_t i = 0; i < duckdb_row_count(&res); i++)
         {
@@ -104,26 +111,36 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
             appendStringInfo(&ddl, "%s %s%s", quote_identifier(cname), duckdb_map_type_name(ctype), (i < duckdb_row_count(&res)-1) ? ", " : "");
             duckdb_free(cname); duckdb_free(ctype);
         }
-        duckdb_destroy_result(&res);
+	        duckdb_destroy_result(&res);
+			pfree(remote_schema_lit);
 
-        appendStringInfo(&ddl, ") SERVER %s OPTIONS (table '%s')", 
-                         quote_identifier(server->servername), stmt->remote_schema);
+			remote_schema_pg_lit = quote_literal_cstr(stmt->remote_schema);
+	        appendStringInfo(&ddl, ") SERVER %s OPTIONS (table %s)",
+	                         quote_identifier(server->servername), remote_schema_pg_lit);
+			pfree(remote_schema_pg_lit);
 
-        if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
-            elog(ERROR, "Failed to create foreign table via SPI: %s", ddl.data);
+	        if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
+	            elog(ERROR, "Failed to create foreign table via SPI: %s", ddl.data);
     }
     else
     {
-        /* 
+        /*
          * 1. Get list of tables first.
          * 2. For each table, use DESCRIBE to get accurate column info.
          */
-        duckdb_result tables_res;
-        appendStringInfo(&query, 
-            "SELECT database_name, schema_name, table_name "
-            "FROM duckdb_tables() "
-            "WHERE database_name = '%s' OR schema_name = '%s'", 
-            stmt->remote_schema, stmt->remote_schema);
+	        duckdb_result tables_res;
+			char *remote_schema_lit;
+			if (!duckdb_fdw_is_safe_sql_fragment(stmt->remote_schema))
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+						 errmsg("remote schema contains unsafe SQL fragment")));
+			remote_schema_lit = duckdb_fdw_quote_literal(stmt->remote_schema);
+	        appendStringInfo(&query,
+	            "SELECT database_name, schema_name, table_name "
+	            "FROM duckdb_tables() "
+	            "WHERE database_name = %s OR schema_name = %s",
+	            remote_schema_lit, remote_schema_lit);
+			pfree(remote_schema_lit);
 
         if (duckdb_query(conn, query.data, &tables_res) == DuckDBError)
             elog(ERROR, "DuckDB: %s", duckdb_result_error(&tables_res));
@@ -133,43 +150,49 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
             char *dbname = duckdb_value_varchar(&tables_res, 0, i);
             char *schname = duckdb_value_varchar(&tables_res, 1, i);
             char *tname = duckdb_value_varchar(&tables_res, 2, i);
-            
+
             StringInfoData ddl;
             StringInfoData desc_query;
             duckdb_result col_res;
 
             initStringInfo(&ddl);
             initStringInfo(&desc_query);
-            
-            appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (", 
+
+            appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (",
                              quote_identifier(stmt->local_schema), quote_identifier(tname));
-            
-            appendStringInfo(&desc_query, "DESCRIBE SELECT * FROM %s.%s.%s", 
+
+            appendStringInfo(&desc_query, "DESCRIBE SELECT * FROM %s.%s.%s",
                              quote_identifier(dbname), quote_identifier(schname), quote_identifier(tname));
-            
-            if (duckdb_query(conn, desc_query.data, &col_res) != DuckDBError)
-            {
-                bool first_col = true;
+
+	            if (duckdb_query(conn, desc_query.data, &col_res) != DuckDBError)
+	            {
+					char *remote_table_pg_lit;
+					char *remote_table_name;
+	                bool first_col = true;
                 for (idx_t j = 0; j < duckdb_row_count(&col_res); j++)
                 {
                     char *cname = duckdb_value_varchar(&col_res, 0, j);
                     char *ctype = duckdb_value_varchar(&col_res, 1, j);
-                    
+
                     if (!first_col) appendStringInfoString(&ddl, ", ");
                     appendStringInfo(&ddl, "%s %s", quote_identifier(cname), duckdb_map_type_name(ctype));
                     first_col = false;
-                    
+
                     duckdb_free(cname); duckdb_free(ctype);
                 }
-                appendStringInfo(&ddl, ") SERVER %s OPTIONS (table '%s.%s.%s')", 
-                                 quote_identifier(server->servername), dbname, schname, tname);
-                
+						remote_table_name = psprintf("%s.%s.%s", dbname, schname, tname);
+						remote_table_pg_lit = quote_literal_cstr(remote_table_name);
+						pfree(remote_table_name);
+		                appendStringInfo(&ddl, ") SERVER %s OPTIONS (table %s)",
+		                                 quote_identifier(server->servername), remote_table_pg_lit);
+						pfree(remote_table_pg_lit);
+
                 if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
                     elog(ERROR, "Failed to create foreign table: %s", ddl.data);
-                
+
                 duckdb_destroy_result(&col_res);
             }
-            
+
             duckdb_free(dbname); duckdb_free(schname); duckdb_free(tname);
             pfree(ddl.data); pfree(desc_query.data);
         }

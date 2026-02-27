@@ -21,8 +21,285 @@
 #include "miscadmin.h"
 #include "executor/executor.h"
 #include "commands/explain.h"
+#include "nodes/nodeFuncs.h"
 
 PG_MODULE_MAGIC;
+
+#define DUCKDB_EPOCH_DIFF_DAYS 10957
+#define DUCKDB_EPOCH_DIFF_MICROS INT64CONST(946684800000000)
+
+static char *
+duckdb_build_relation_reference(const char *table_name)
+{
+	if (!table_name)
+		return pstrdup("\"\"");
+
+	if (!duckdb_fdw_is_safe_sql_fragment(table_name))
+		ereport(ERROR,
+				(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+				 errmsg("unsafe table option value")));
+
+	if (strstr(table_name, ".parquet") != NULL &&
+		strstr(table_name, "read_parquet") == NULL)
+	{
+		char *lit = duckdb_fdw_quote_literal(table_name);
+		char *expr = psprintf("read_parquet(%s)", lit);
+		pfree(lit);
+		return expr;
+	}
+
+	if (strstr(table_name, "read_parquet") != NULL ||
+		strstr(table_name, "read_csv") != NULL ||
+		strchr(table_name, '(') != NULL)
+	{
+		return pstrdup(table_name);
+	}
+
+	if (strchr(table_name, '.') != NULL || strchr(table_name, '"') != NULL)
+		return pstrdup(table_name);
+
+	return duckdb_fdw_quote_identifier(table_name);
+}
+
+static void
+duckdb_bind_parameter(duckdb_prepared_statement stmt, idx_t param_idx, Oid typid, Datum val, bool isnull)
+{
+	Oid			typoutput;
+	bool		typisvarlena;
+	char	   *outstr;
+
+	if (isnull)
+	{
+		if (duckdb_bind_null(stmt, param_idx) == DuckDBError)
+			elog(ERROR, "duckdb_fdw: failed to bind NULL at parameter %zu", (size_t) param_idx);
+		return;
+	}
+
+	switch (typid)
+	{
+		case BOOLOID:
+			if (duckdb_bind_boolean(stmt, param_idx, DatumGetBool(val)) == DuckDBError)
+				elog(ERROR, "duckdb_fdw: bind bool failed at parameter %zu", (size_t) param_idx);
+			return;
+		case INT2OID:
+			if (duckdb_bind_int16(stmt, param_idx, DatumGetInt16(val)) == DuckDBError)
+				elog(ERROR, "duckdb_fdw: bind int2 failed at parameter %zu", (size_t) param_idx);
+			return;
+		case INT4OID:
+			if (duckdb_bind_int32(stmt, param_idx, DatumGetInt32(val)) == DuckDBError)
+				elog(ERROR, "duckdb_fdw: bind int4 failed at parameter %zu", (size_t) param_idx);
+			return;
+		case INT8OID:
+			if (duckdb_bind_int64(stmt, param_idx, DatumGetInt64(val)) == DuckDBError)
+				elog(ERROR, "duckdb_fdw: bind int8 failed at parameter %zu", (size_t) param_idx);
+			return;
+		case FLOAT4OID:
+			if (duckdb_bind_float(stmt, param_idx, DatumGetFloat4(val)) == DuckDBError)
+				elog(ERROR, "duckdb_fdw: bind float4 failed at parameter %zu", (size_t) param_idx);
+			return;
+		case FLOAT8OID:
+			if (duckdb_bind_double(stmt, param_idx, DatumGetFloat8(val)) == DuckDBError)
+				elog(ERROR, "duckdb_fdw: bind float8 failed at parameter %zu", (size_t) param_idx);
+			return;
+		case DATEOID:
+			{
+				duckdb_date date = {DatumGetDateADT(val) + DUCKDB_EPOCH_DIFF_DAYS};
+				if (duckdb_bind_date(stmt, param_idx, date) == DuckDBError)
+					elog(ERROR, "duckdb_fdw: bind date failed at parameter %zu", (size_t) param_idx);
+				return;
+			}
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			{
+				duckdb_timestamp ts;
+				ts.micros = DatumGetInt64(val) + DUCKDB_EPOCH_DIFF_MICROS;
+				if (duckdb_bind_timestamp(stmt, param_idx, ts) == DuckDBError)
+					elog(ERROR, "duckdb_fdw: bind timestamp failed at parameter %zu", (size_t) param_idx);
+				return;
+			}
+		default:
+			getTypeOutputInfo(typid, &typoutput, &typisvarlena);
+			outstr = OidOutputFunctionCall(typoutput, val);
+			if (duckdb_bind_varchar(stmt, param_idx, outstr) == DuckDBError)
+			{
+				pfree(outstr);
+				elog(ERROR, "duckdb_fdw: bind text fallback failed at parameter %zu", (size_t) param_idx);
+			}
+			pfree(outstr);
+			return;
+	}
+}
+
+static void
+duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, ForeignScan *fsplan)
+{
+	if (fsplan->fdw_exprs != NIL)
+	{
+		ListCell   *lc_expr;
+		ListCell   *lc_state;
+		idx_t		param_idx = 1;
+
+		festate->param_exprs = fsplan->fdw_exprs;
+		festate->param_expr_states = ExecInitExprList(fsplan->fdw_exprs, &node->ss.ps);
+
+		if (duckdb_prepare(festate->conn, festate->query, &festate->prepared_stmt) == DuckDBError)
+		{
+			const char *err = festate->prepared_stmt ? duckdb_prepare_error(festate->prepared_stmt) : "prepare error";
+			elog(ERROR, "duckdb_fdw: prepare failed: %s", err ? err : "prepare error");
+		}
+
+		forboth(lc_state, festate->param_expr_states, lc_expr, festate->param_exprs)
+		{
+			ExprState  *estate = lfirst(lc_state);
+			Expr	   *expr = lfirst(lc_expr);
+			bool		isnull = false;
+			Datum		val;
+			Oid			typid;
+
+			val = ExecEvalExpr(estate, node->ss.ps.ps_ExprContext, &isnull);
+			typid = exprType((Node *) expr);
+			duckdb_bind_parameter(festate->prepared_stmt, param_idx, typid, val, isnull);
+			param_idx++;
+		}
+
+		if (duckdb_execute_prepared(festate->prepared_stmt, &festate->res) == DuckDBError)
+			elog(ERROR, "duckdb_fdw: execute prepared failed");
+		festate->use_prepared_stmt = true;
+	}
+	else
+	{
+		if (duckdb_query(festate->conn, festate->query, &festate->res) == DuckDBError)
+			elog(ERROR, "duckdb_fdw: query failed: %s", duckdb_result_error(&festate->res));
+		festate->use_prepared_stmt = false;
+	}
+}
+
+static bool
+duckdb_fetch_next_chunk(DuckDBFdwExecState *festate)
+{
+	if (festate->current_chunk)
+		duckdb_destroy_data_chunk(&festate->current_chunk);
+
+	festate->current_chunk = duckdb_result_get_chunk(festate->res, festate->current_chunk_idx++);
+	festate->current_chunk_row_idx = 0;
+	if (!festate->current_chunk)
+	{
+		festate->current_chunk_row_count = 0;
+		return false;
+	}
+
+	festate->current_chunk_row_count = duckdb_data_chunk_get_size(festate->current_chunk);
+	return festate->current_chunk_row_count > 0;
+}
+
+static bool
+duckdb_can_use_chunk_scan(TupleDesc tupdesc, List *retrieved_attrs)
+{
+	ListCell   *lc;
+
+	if (tupdesc == NULL || retrieved_attrs == NIL)
+		return false;
+
+	foreach(lc, retrieved_attrs)
+	{
+		int			attnum_pg = lfirst_int(lc);
+		Oid			pgtype;
+
+		if (attnum_pg <= 0 || attnum_pg > tupdesc->natts)
+			return false;
+
+		pgtype = TupleDescAttr(tupdesc, attnum_pg - 1)->atttypid;
+		switch (pgtype)
+		{
+			case BOOLOID:
+			case INT2OID:
+			case INT4OID:
+			case INT8OID:
+			case FLOAT4OID:
+			case FLOAT8OID:
+			case DATEOID:
+			case TIMESTAMPOID:
+			case TIMESTAMPTZOID:
+				break;
+			default:
+				return false;
+		}
+	}
+
+	return true;
+}
+
+static bool
+duckdb_append_slot_row(DuckDBFdwExecState *festate, TupleTableSlot *slot)
+{
+	int i;
+
+	for (i = 0; i < festate->tupdesc->natts; i++)
+	{
+		bool		isnull;
+		Datum		val = slot_getattr(slot, i + 1, &isnull);
+		Oid			typ = TupleDescAttr(festate->tupdesc, i)->atttypid;
+		duckdb_state state = DuckDBSuccess;
+
+		if (isnull)
+			state = duckdb_append_null(festate->appender);
+		else
+		{
+			switch (typ)
+			{
+				case BOOLOID:
+					state = duckdb_append_bool(festate->appender, DatumGetBool(val));
+					break;
+				case INT2OID:
+					state = duckdb_append_int16(festate->appender, DatumGetInt16(val));
+					break;
+				case INT4OID:
+					state = duckdb_append_int32(festate->appender, DatumGetInt32(val));
+					break;
+				case INT8OID:
+					state = duckdb_append_int64(festate->appender, DatumGetInt64(val));
+					break;
+				case FLOAT4OID:
+					state = duckdb_append_float(festate->appender, DatumGetFloat4(val));
+					break;
+				case FLOAT8OID:
+					state = duckdb_append_double(festate->appender, DatumGetFloat8(val));
+					break;
+				case DATEOID:
+					{
+						duckdb_date date = {DatumGetDateADT(val) + DUCKDB_EPOCH_DIFF_DAYS};
+						state = duckdb_append_date(festate->appender, date);
+					}
+					break;
+				case TIMESTAMPOID:
+				case TIMESTAMPTZOID:
+					{
+						duckdb_timestamp ts;
+						ts.micros = DatumGetInt64(val) + DUCKDB_EPOCH_DIFF_MICROS;
+						state = duckdb_append_timestamp(festate->appender, ts);
+					}
+					break;
+				default:
+					{
+						Oid typoutput;
+						bool typisvarlena;
+						char *outstr;
+
+						getTypeOutputInfo(typ, &typoutput, &typisvarlena);
+						outstr = OidOutputFunctionCall(typoutput, val);
+						state = duckdb_append_varchar(festate->appender, outstr);
+						pfree(outstr);
+					}
+					break;
+			}
+		}
+
+		if (state == DuckDBError)
+			return false;
+	}
+
+	return duckdb_appender_end_row(festate->appender) != DuckDBError;
+}
 
 static bool
 foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
@@ -57,8 +334,8 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
     }
 
     /*
-     * If they have different user mappings, they might have different 
-     * permissions or connection settings. But if both are NULL (local DuckDB), 
+     * If they have different user mappings, they might have different
+     * permissions or connection settings. But if both are NULL (local DuckDB),
      * it is fine.
      */
     if (ofpinfo->user != ifpinfo->user &&
@@ -91,7 +368,7 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
     /*
      * Estimate rows and width.
      */
-    fpinfo->rows = (ofpinfo->rows > ifpinfo->rows) ? ofpinfo->rows : ifpinfo->rows; 
+    fpinfo->rows = (ofpinfo->rows > ifpinfo->rows) ? ofpinfo->rows : ifpinfo->rows;
     fpinfo->width = ofpinfo->width + ifpinfo->width;
     joinrel->rows = fpinfo->rows;
 
@@ -172,11 +449,13 @@ static void
 duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid)
 {
     DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *) palloc0(sizeof(DuckDBFdwRelationInfo));
+    duckdb_opt  *options;
     baserel->fdw_private = (void *) fpinfo;
     fpinfo->foreigntableid = foreigntableid;
     fpinfo->table = GetForeignTable(foreigntableid);
     fpinfo->server = GetForeignServer(fpinfo->table->serverid);
-    
+    options = duckdb_get_options(foreigntableid);
+
     HeapTuple tp = SearchSysCache2(USERMAPPINGUSERSERVER,
                                    ObjectIdGetDatum(GetUserId()),
                                    ObjectIdGetDatum(fpinfo->server->serverid));
@@ -185,7 +464,7 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
         fpinfo->user = GetUserMapping(GetUserId(), fpinfo->server->serverid);
         ReleaseSysCache(tp);
     }
-    
+
     fpinfo->pushdown_safe = true;
 
     /* Classify conditions into remote and local */
@@ -194,7 +473,7 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
 
     /* Identify which attributes are used */
     pull_varattnos((Node *) baserel->reltarget->exprs, baserel->relid, &fpinfo->attrs_used);
-    
+
     /* Add attributes from conditions */
     ListCell *lc;
     foreach(lc, fpinfo->local_conds)
@@ -209,6 +488,32 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
     }
 
     baserel->rows = 1000;
+
+    if (options && options->use_remote_estimate && options->svr_table)
+    {
+        duckdb_connection conn = duckdb_get_connection(fpinfo->server, false);
+        duckdb_result count_res;
+        StringInfoData count_sql;
+        char *relation_ref = duckdb_build_relation_reference(options->svr_table);
+        bool query_ok = false;
+
+        initStringInfo(&count_sql);
+        appendStringInfo(&count_sql, "SELECT COUNT(*) FROM %s", relation_ref);
+        if (duckdb_query(conn, count_sql.data, &count_res) == DuckDBSuccess)
+            query_ok = true;
+        if (query_ok &&
+            duckdb_row_count(&count_res) > 0)
+        {
+            int64_t count_rows = duckdb_value_int64(&count_res, 0, 0);
+            if (count_rows > 0)
+                baserel->rows = (double) count_rows;
+        }
+        if (query_ok)
+            duckdb_destroy_result(&count_res);
+        pfree(relation_ref);
+        pfree(count_sql.data);
+    }
+
     fpinfo->rows = baserel->rows;
     fpinfo->width = baserel->reltarget->width;
 }
@@ -261,7 +566,7 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
         scanrelid = 0;
         deparse_tlist = tlist;
         /* Use the OID of the first foreign table involved in the join as a dummy */
-        rel_oid = fpinfo->server->serverid; 
+        rel_oid = fpinfo->server->serverid;
     }
     else
     {
@@ -272,12 +577,12 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
 
     duckdb_deparse_select_stmt_for_rel(&sql, root, baserel, deparse_tlist, fpinfo->remote_conds, NIL, false, false, false, &retrieved_attrs, &params_list);
 
-    fdw_private = list_make4(makeString(sql.data), 
-                             retrieved_attrs, 
+    fdw_private = list_make4(makeString(sql.data),
+                             retrieved_attrs,
                              makeInteger(rel_oid),
                              makeInteger(fpinfo->server->serverid));
-    
-    return make_foreignscan(tlist, extract_actual_clauses(fpinfo->local_conds, false), scanrelid, NIL, fdw_private, (IS_UPPER_REL(baserel) || IS_JOIN_REL(baserel) ? tlist : NIL), NIL, outer_plan);
+
+    return make_foreignscan(tlist, extract_actual_clauses(fpinfo->local_conds, false), scanrelid, params_list, fdw_private, (IS_UPPER_REL(baserel) || IS_JOIN_REL(baserel) ? tlist : NIL), NIL, outer_plan);
 }
 
 static void
@@ -287,7 +592,7 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
     ForeignScan *fsplan = (ForeignScan *)node->ss.ps.plan;
     ForeignTable *table;
     Oid foreigntableid;
-    
+
     node->fdw_state = (void *)festate;
 
     if (fsplan->scan.scanrelid > 0)
@@ -297,31 +602,37 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
         table = GetForeignTable(foreigntableid);
         festate->conn = duckdb_get_connection(GetForeignServer(table->serverid), false);
     }
-    else
-    {
-        if (node->ss.ss_ScanTupleSlot)
-            festate->tupdesc = node->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
-        Oid serverid = intVal(list_nth(fsplan->fdw_private, 3));
-        festate->conn = duckdb_get_connection(GetForeignServer(serverid), false);
-    }
+	else
+	{
+		Oid serverid = intVal(list_nth(fsplan->fdw_private, 3));
+		if (node->ss.ss_ScanTupleSlot)
+			festate->tupdesc = node->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+		festate->conn = duckdb_get_connection(GetForeignServer(serverid), false);
+	}
 
-    festate->attinmeta = TupleDescGetAttInMetadata(festate->tupdesc);
-    festate->query = strVal(list_nth(fsplan->fdw_private, 0));
-    
-    if (list_length(fsplan->fdw_private) > 1)
-        festate->retrieved_attrs = (List *) list_nth(fsplan->fdw_private, 1);
-    else
-        festate->retrieved_attrs = NIL;
-    
-    if (duckdb_query(festate->conn, festate->query, &festate->res) == DuckDBError)
-    {
-        elog(ERROR, "duckdb_fdw: query failed: %s", duckdb_result_error(&festate->res));
-    }
+	festate->attinmeta = TupleDescGetAttInMetadata(festate->tupdesc);
+	festate->query = strVal(list_nth(fsplan->fdw_private, 0));
 
-    festate->current_chunk_idx = 0;
-    festate->current_chunk_row_idx = 0;
-    festate->current_chunk_row_count = duckdb_row_count(&festate->res);
-    festate->is_started = true;
+	if (list_length(fsplan->fdw_private) > 1)
+		festate->retrieved_attrs = (List *) list_nth(fsplan->fdw_private, 1);
+	else
+		festate->retrieved_attrs = NIL;
+
+	if (node->ss.ps.ps_ExprContext == NULL)
+		ExecAssignExprContext(node->ss.ps.state, &node->ss.ps);
+
+	duckdb_execute_query(festate, node, fsplan);
+
+	festate->current_chunk_idx = 0;
+	festate->current_chunk_row_idx = 0;
+	festate->global_row_idx = 0;
+	festate->use_chunk_scan = duckdb_can_use_chunk_scan(festate->tupdesc,
+														 festate->retrieved_attrs);
+	if (festate->use_chunk_scan)
+		festate->use_chunk_scan = duckdb_fetch_next_chunk(festate);
+	if (!festate->use_chunk_scan)
+		festate->current_chunk_row_count = duckdb_row_count(&festate->res);
+	festate->is_started = true;
 }
 
 static Datum
@@ -344,8 +655,8 @@ duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row
             return Float4GetDatum(duckdb_value_float(&festate->res, col_idx, global_row));
         case FLOAT8OID:
             return Float8GetDatum(duckdb_value_double(&festate->res, col_idx, global_row));
-        case DATEOID:
-            return Int32GetDatum(duckdb_value_date(&festate->res, col_idx, global_row).days - 10957);
+	        case DATEOID:
+	            return Int32GetDatum(duckdb_value_date(&festate->res, col_idx, global_row).days - DUCKDB_EPOCH_DIFF_DAYS);
         case UUIDOID: {
             char *s = duckdb_value_varchar(&festate->res, col_idx, global_row);
             if (!s) return (Datum)0;
@@ -356,7 +667,7 @@ duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row
         default: {
             char *s = duckdb_value_varchar(&festate->res, col_idx, global_row);
             if (!s) return (Datum)0;
-            
+
             /* Handle array format conversion: DuckDB [1,2] -> PG {1,2} */
             size_t slen = strlen(s);
             if (slen >= 2 && s[0] == '[' && s[slen-1] == ']')
@@ -384,54 +695,116 @@ duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row
 static TupleTableSlot *
 duckdbIterateForeignScan(ForeignScanState *node)
 {
-    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
-    TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
-    ListCell   *lc;
-    int         i;
+	    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
+	    TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
+	    ListCell   *lc;
+	    int         i;
 
     ExecClearTuple(slot);
 
-    if (festate->current_chunk_row_idx >= festate->current_chunk_row_count)
-        return slot;
+	    if (festate->use_chunk_scan)
+		{
+			while (festate->current_chunk_row_idx >= festate->current_chunk_row_count)
+			{
+				if (!duckdb_fetch_next_chunk(festate))
+					return slot;
+			}
+		}
+		else if (festate->current_chunk_row_idx >= festate->current_chunk_row_count)
+		{
+			return slot;
+		}
 
     if (festate->tupdesc == NULL)
         festate->tupdesc = slot->tts_tupleDescriptor;
 
-    i = 0;
-    foreach(lc, festate->retrieved_attrs)
-    {
-        int attnum_pg = lfirst_int(lc);
-        if (attnum_pg > 0 && attnum_pg <= slot->tts_tupleDescriptor->natts) {
-            int attnum_idx = attnum_pg - 1;
-            Oid pgtype = TupleDescAttr(festate->tupdesc, attnum_idx)->atttypid;
-            
-            if (duckdb_value_is_null(&festate->res, i, festate->current_chunk_row_idx))
-            {
-                slot->tts_isnull[attnum_idx] = true;
-                slot->tts_values[attnum_idx] = (Datum)0;
-            }
-            else
-            {
-                slot->tts_isnull[attnum_idx] = false;
-                slot->tts_values[attnum_idx] = duckdb_value_to_pg(festate, i, festate->current_chunk_row_idx, pgtype);
-            }
-        }
-        i++;
-    }
+	    i = 0;
+	    foreach(lc, festate->retrieved_attrs)
+	    {
+	        int attnum_pg = lfirst_int(lc);
+	        if (attnum_pg > 0 && attnum_pg <= slot->tts_tupleDescriptor->natts) {
+	            int attnum_idx = attnum_pg - 1;
+	            Oid pgtype = TupleDescAttr(festate->tupdesc, attnum_idx)->atttypid;
+				bool	isnull = false;
+				Datum	dvalue = (Datum) 0;
 
-    ExecStoreVirtualTuple(slot);
-    festate->current_chunk_row_idx++;
-    return slot;
+				if (festate->use_chunk_scan && festate->current_chunk)
+				{
+					duckdb_vector vector = duckdb_data_chunk_get_vector(festate->current_chunk, i);
+					uint64_t *validity = duckdb_vector_get_validity(vector);
+					void *data = duckdb_vector_get_data(vector);
+					idx_t row = festate->current_chunk_row_idx;
+
+					if (validity && !duckdb_validity_row_is_valid(validity, row))
+						isnull = true;
+					else
+					{
+						switch (pgtype)
+						{
+							case BOOLOID:
+								dvalue = BoolGetDatum(((bool *) data)[row]);
+								break;
+							case INT2OID:
+								dvalue = Int16GetDatum(((int16_t *) data)[row]);
+								break;
+							case INT4OID:
+								dvalue = Int32GetDatum(((int32_t *) data)[row]);
+								break;
+							case INT8OID:
+								dvalue = Int64GetDatum(((int64_t *) data)[row]);
+								break;
+							case FLOAT4OID:
+								dvalue = Float4GetDatum(((float *) data)[row]);
+								break;
+							case FLOAT8OID:
+								dvalue = Float8GetDatum(((double *) data)[row]);
+								break;
+							case DATEOID:
+								dvalue = Int32GetDatum(((duckdb_date *) data)[row].days - DUCKDB_EPOCH_DIFF_DAYS);
+								break;
+							case TIMESTAMPOID:
+							case TIMESTAMPTZOID:
+								dvalue = Int64GetDatum(((duckdb_timestamp *) data)[row].micros - DUCKDB_EPOCH_DIFF_MICROS);
+								break;
+							default:
+								dvalue = duckdb_value_to_pg(festate, i, festate->global_row_idx, pgtype);
+								break;
+						}
+					}
+				}
+				else if (duckdb_value_is_null(&festate->res, i, festate->current_chunk_row_idx))
+				{
+					isnull = true;
+				}
+				else
+				{
+					dvalue = duckdb_value_to_pg(festate, i, festate->current_chunk_row_idx, pgtype);
+				}
+
+				slot->tts_isnull[attnum_idx] = isnull;
+				slot->tts_values[attnum_idx] = isnull ? (Datum) 0 : dvalue;
+	        }
+	        i++;
+	    }
+
+	    ExecStoreVirtualTuple(slot);
+	    festate->current_chunk_row_idx++;
+		festate->global_row_idx++;
+	    return slot;
 }
 
 static void
 duckdbEndForeignScan(ForeignScanState *node)
 {
-    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
-    if (festate)
-    {
-        duckdb_destroy_result(&festate->res);
-    }
+	    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
+	    if (festate)
+	    {
+			if (festate->current_chunk)
+				duckdb_destroy_data_chunk(&festate->current_chunk);
+	        duckdb_destroy_result(&festate->res);
+			if (festate->use_prepared_stmt && festate->prepared_stmt)
+				duckdb_destroy_prepare(&festate->prepared_stmt);
+	    }
 }
 
 static void
@@ -576,57 +949,101 @@ duckdbEndDirectModify(ForeignScanState *node)
 static void
 duckdbBeginForeignModify(ModifyTableState *mtstate, ResultRelInfo *resultRelInfo, List *fdw_private, int subplan_index, int eflags)
 {
-    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
-    Relation rel = resultRelInfo->ri_RelationDesc;
-    duckdb_opt *options = duckdb_get_options(RelationGetRelid(rel));
-    festate->conn = duckdb_get_connection(GetForeignServer(GetForeignTable(RelationGetRelid(rel))->serverid), false);
-    festate->table_name = options->svr_table;
-    festate->tupdesc = RelationGetDescr(rel);
-    resultRelInfo->ri_FdwState = (void *)festate;
+	    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
+	    Relation rel = resultRelInfo->ri_RelationDesc;
+	    duckdb_opt *options = duckdb_get_options(RelationGetRelid(rel));
+		duckdb_state state;
+	    festate->conn = duckdb_get_connection(GetForeignServer(GetForeignTable(RelationGetRelid(rel))->serverid), false);
+	    festate->table_name = options->svr_table;
+	    festate->tupdesc = RelationGetDescr(rel);
+		festate->use_appender = false;
+		state = duckdb_appender_create(festate->conn, NULL, festate->table_name, &festate->appender);
+		if (state == DuckDBSuccess)
+			festate->use_appender = true;
+	    resultRelInfo->ri_FdwState = (void *)festate;
 }
 
 static TupleTableSlot *
 duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
 {
-    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)resultRelInfo->ri_FdwState;
-    StringInfoData sql;
-    int i;
+	    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)resultRelInfo->ri_FdwState;
+		if (festate->use_appender)
+		{
+			if (!duckdb_append_slot_row(festate, slot))
+			{
+				const char *err = duckdb_appender_error(festate->appender);
+				elog(ERROR, "DuckDB appender insert failed: %s", err ? err : "unknown appender error");
+			}
+			return slot;
+		}
 
-    initStringInfo(&sql);
-    appendStringInfo(&sql, "INSERT INTO %s VALUES (", festate->table_name);
+		/* Legacy fallback path */
+		{
+			StringInfoData sql;
+			int i;
+			char *relref = duckdb_build_relation_reference(festate->table_name);
 
-    for (int i = 0; i < festate->tupdesc->natts; i++)
-    {
-        bool isnull;
-        Datum val = slot_getattr(slot, i + 1, &isnull);
-        if (i > 0) appendStringInfoString(&sql, ", ");
-        if (isnull) appendStringInfoString(&sql, "NULL");
-        else {
-            Oid typ = TupleDescAttr(festate->tupdesc, i)->atttypid;
-            Oid out; bool var; getTypeOutputInfo(typ, &out, &var);
-            char *s = OidOutputFunctionCall(out, val);
-            if (typ == BOOLOID) appendStringInfoString(&sql, (DatumGetBool(val) ? "true" : "false"));
-            else if (typ == INT4OID || typ == INT8OID || typ == FLOAT8OID) appendStringInfoString(&sql, s);
-            else {
-                appendStringInfoString(&sql, "'");
-                for (char *p = s; *p; p++) {
-                    if (*p == '\'') appendStringInfoString(&sql, "''");
-                    else appendStringInfoChar(&sql, *p);
-                }
-                appendStringInfoString(&sql, "'");
-            }
-            pfree(s);
-        }
-    }
-    appendStringInfoString(&sql, ");");
+			initStringInfo(&sql);
+			appendStringInfo(&sql, "INSERT INTO %s VALUES (", relref);
+			pfree(relref);
 
-    duckdb_result res;
-    if (duckdb_query(festate->conn, sql.data, &res) == DuckDBError)
-        elog(ERROR, "DuckDB insert failed: %s", duckdb_result_error(&res));
-    duckdb_destroy_result(&res);
-    pfree(sql.data);
+			for (i = 0; i < festate->tupdesc->natts; i++)
+			{
+				bool isnull;
+				Datum val = slot_getattr(slot, i + 1, &isnull);
+				if (i > 0) appendStringInfoString(&sql, ", ");
+				if (isnull) appendStringInfoString(&sql, "NULL");
+				else {
+					Oid typ = TupleDescAttr(festate->tupdesc, i)->atttypid;
+					Oid out; bool var; getTypeOutputInfo(typ, &out, &var);
+					char *s = OidOutputFunctionCall(out, val);
+					if (typ == BOOLOID) appendStringInfoString(&sql, (DatumGetBool(val) ? "true" : "false"));
+					else if (typ == INT4OID || typ == INT8OID || typ == FLOAT8OID) appendStringInfoString(&sql, s);
+					else {
+						char *lit = duckdb_fdw_quote_literal(s);
+						appendStringInfoString(&sql, lit);
+						pfree(lit);
+					}
+					pfree(s);
+				}
+			}
+			appendStringInfoString(&sql, ");");
 
-    return slot;
+			{
+				duckdb_result res;
+				if (duckdb_query(festate->conn, sql.data, &res) == DuckDBError)
+					elog(ERROR, "DuckDB insert failed: %s", duckdb_result_error(&res));
+				duckdb_destroy_result(&res);
+			}
+			pfree(sql.data);
+		}
+
+	    return slot;
+}
+
+static TupleTableSlot **
+duckdbExecForeignBatchInsert(EState *estate,
+							 ResultRelInfo *rinfo,
+							 TupleTableSlot **slots,
+							 TupleTableSlot **planSlots,
+							 int *numSlots)
+{
+	int i;
+
+	for (i = 0; i < *numSlots; i++)
+		duckdbExecForeignInsert(estate, rinfo, slots[i], planSlots ? planSlots[i] : NULL);
+
+	return slots;
+}
+
+static int
+duckdbGetForeignModifyBatchSize(ResultRelInfo *rinfo)
+{
+	DuckDBFdwExecState *festate = (DuckDBFdwExecState *) rinfo->ri_FdwState;
+
+	if (festate && festate->use_appender)
+		return 2048;
+	return 1;
 }
 
 static TupleTableSlot *
@@ -646,6 +1063,15 @@ duckdbExecForeignDelete(EState *executor, ResultRelInfo *resultRelInfo, TupleTab
 static void
 duckdbEndForeignModify(EState *executor, ResultRelInfo *resultRelInfo)
 {
+	DuckDBFdwExecState *festate = (DuckDBFdwExecState *) resultRelInfo->ri_FdwState;
+
+	if (!festate)
+		return;
+	if (festate->use_appender && festate->appender)
+	{
+		duckdb_appender_close(festate->appender);
+		duckdb_appender_destroy(&festate->appender);
+	}
 }
 
 static void
@@ -675,12 +1101,14 @@ Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
 
     /* Write Support */
     fdwroutine->AddForeignUpdateTargets = duckdbAddForeignUpdateTargets;
-    fdwroutine->PlanForeignModify = duckdbPlanForeignModify;
-    fdwroutine->BeginForeignModify = duckdbBeginForeignModify;
-    fdwroutine->ExecForeignInsert = duckdbExecForeignInsert;
-    fdwroutine->ExecForeignUpdate = duckdbExecForeignUpdate;
-    fdwroutine->ExecForeignDelete = duckdbExecForeignDelete;
-    fdwroutine->EndForeignModify = duckdbEndForeignModify;
+	    fdwroutine->PlanForeignModify = duckdbPlanForeignModify;
+	    fdwroutine->BeginForeignModify = duckdbBeginForeignModify;
+	    fdwroutine->ExecForeignInsert = duckdbExecForeignInsert;
+		fdwroutine->ExecForeignBatchInsert = duckdbExecForeignBatchInsert;
+		fdwroutine->GetForeignModifyBatchSize = duckdbGetForeignModifyBatchSize;
+	    fdwroutine->ExecForeignUpdate = duckdbExecForeignUpdate;
+	    fdwroutine->ExecForeignDelete = duckdbExecForeignDelete;
+	    fdwroutine->EndForeignModify = duckdbEndForeignModify;
 
     PG_RETURN_POINTER(fdwroutine);
 }
@@ -704,20 +1132,38 @@ Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS) {
     char *key_id = text_to_cstring(PG_GETARG_TEXT_PP(2));
     char *secret = text_to_cstring(PG_GETARG_TEXT_PP(3));
     char *region = PG_ARGISNULL(4) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(4));
-    
-    duckdb_connection conn = duckdb_get_connection(GetForeignServerByName(servername, false), false);
-    
-    StringInfoData sql;
-    initStringInfo(&sql);
-    appendStringInfo(&sql, "CREATE OR REPLACE SECRET %s ( TYPE S3, KEY_ID '%s', SECRET '%s'", 
-                     secret_name, key_id, secret);
-    if (region)
-        appendStringInfo(&sql, ", REGION '%s'", region);
-    appendStringInfoString(&sql, " );");
-    
-    duckdb_do_sql_command(conn, sql.data, ERROR);
-    
-    PG_RETURN_VOID();
+
+	    duckdb_connection conn = duckdb_get_connection(GetForeignServerByName(servername, false), false);
+
+	    StringInfoData sql;
+		char *secret_id;
+		char *key_lit;
+		char *secret_lit;
+	    initStringInfo(&sql);
+		if (!duckdb_fdw_is_valid_identifier(secret_name))
+			ereport(ERROR,
+					(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+					 errmsg("invalid secret name \"%s\"", secret_name)));
+		secret_id = duckdb_fdw_quote_identifier(secret_name);
+		key_lit = duckdb_fdw_quote_literal(key_id);
+		secret_lit = duckdb_fdw_quote_literal(secret);
+	    appendStringInfo(&sql, "CREATE OR REPLACE SECRET %s ( TYPE S3, KEY_ID %s, SECRET %s",
+	                     secret_id, key_lit, secret_lit);
+	    if (region)
+		{
+			char *region_lit = duckdb_fdw_quote_literal(region);
+	        appendStringInfo(&sql, ", REGION %s", region_lit);
+			pfree(region_lit);
+		}
+	    appendStringInfoString(&sql, " );");
+
+	    duckdb_do_sql_command(conn, sql.data, ERROR);
+		pfree(secret_id);
+		pfree(key_lit);
+		pfree(secret_lit);
+		pfree(sql.data);
+
+	    PG_RETURN_VOID();
 }
 
 int

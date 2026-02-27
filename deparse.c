@@ -172,6 +172,7 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 {
 	ForeignTable *table;
 	const char *relname = NULL;
+	char	   *relname_copy = NULL;
 	ListCell   *lc = NULL;
 
 	/* obtain additional catalog information. */
@@ -191,13 +192,20 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 	if (relname == NULL)
 		relname = RelationGetRelationName(rel);
 
+	if (!duckdb_fdw_is_safe_sql_fragment(relname))
+		ereport(ERROR,
+				(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+				 errmsg("table option contains unsafe SQL fragment")));
+
 	/* 
 	 * DuckDB 特化：支持数据湖直连
 	 * 如果表名以 .parquet 结尾，或者定义了 path 选项，生成 read_parquet
 	 */
 	if (strstr(relname, ".parquet") != NULL && strstr(relname, "read_parquet") == NULL)
 	{
-		appendStringInfo(buf, "read_parquet('%s')", relname);
+		char *rel_lit = duckdb_fdw_quote_literal(relname);
+		appendStringInfo(buf, "read_parquet(%s)", rel_lit);
+		pfree(rel_lit);
 	}
     else if (strstr(relname, "read_parquet") != NULL || strstr(relname, "read_csv") != NULL)
     {
@@ -206,8 +214,38 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
     }
 	else if (strchr(relname, '.') != NULL || strchr(relname, '"') != NULL)
 	{
-		/* If it contains a dot or quote, assume it's already qualified or quoted */
-		appendStringInfo(buf, "%s", relname);
+		/*
+		 * If this is a dotted identifier chain, quote each simple segment.
+		 * Quoted complex names are passed through as-is.
+		 */
+		if (strchr(relname, '"') == NULL)
+		{
+			char *token;
+			bool first = true;
+
+			relname_copy = pstrdup(relname);
+			token = strtok(relname_copy, ".");
+			while (token)
+			{
+				char *trimmed = duckdb_fdw_trim_token(token);
+
+				if (!first)
+					appendStringInfoChar(buf, '.');
+				first = false;
+
+				if (duckdb_fdw_is_valid_identifier(trimmed))
+					appendStringInfo(buf, "%s", duckdb_quote_identifier(trimmed, QUOTE));
+				else
+					appendStringInfo(buf, "%s", trimmed);
+
+				token = strtok(NULL, ".");
+			}
+			pfree(relname_copy);
+		}
+		else
+		{
+			appendStringInfo(buf, "%s", relname);
+		}
 	}
 	else
 	{

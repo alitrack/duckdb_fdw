@@ -1,3 +1,8 @@
-  Enhancements:
-  - Add a function "duckdb_execute" to execute arbitrary SQL statements on
-    DuckDB.  The statements must not return a result (e.g. DDL statements).
+Enhancements:
+- Harden SQL construction for secrets, ATTACH catalogs, and extension loading.
+- Add token validation and secret redaction on DuckDB error surfaces.
+- Implement prepared-statement parameter binding for pushdown queries.
+- Add chunk-based scan iteration and Appender-based insert with batch insert hooks.
+- Add `use_remote_estimate` row estimation via remote `COUNT(*)` probe.
+- Introduce tiered test profiles (`core`, `integration`, `cloud`, `all`).
+- Fix upgrade script function signature migration safety and metadata consistency.

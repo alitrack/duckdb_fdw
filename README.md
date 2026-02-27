@@ -8,22 +8,33 @@
 
 ---
 
-## 🚀 Key Enhancements (v2.0.0)
+## 🚀 Capability Status (v2.0.0)
 
-- **Vectorized Read Engine**: Powered by the **Apache Arrow C Data Interface** and **Nanoarrow**. Replaced legacy row-based fetching with high-speed, vectorized data transfer (typically 2048 rows per chunk).
-- **High-Performance Ingestion**: 
-    - Integrated DuckDB's **Appender API** for `INSERT` operations (Binary-to-Binary).
-    - Implemented PostgreSQL **Batch Insert API** (PG 14+), enabling turbo-charged `COPY FROM` performance.
-- **Native C API Integration**: Completely removed the SQLite compatibility layer. Built directly on the native DuckDB C API for maximum compatibility and future-proofing.
-- **Enhanced Type Support**: Full binary mapping for `BOOLEAN`, `DATE`, `TIMESTAMP`, `DECIMAL`, and `HUGEINT`. Handles epoch conversions (1970 vs 2000) automatically.
-- **Cloud Native**:
-    - Built-in support for **S3 Tables**, Iceberg, and Delta Lake.
-    - Integrated secret management via `duckdb_create_s3_secret()`.
-- **Intelligent Pushdown**: 
-    - Full support for filter, sorting, and limit pushdown.
-    - **Advanced Analytics**: Direct pushdown of statistical functions (`stddev`, `variance`, etc.) and mathematical functions (`sqrt`, `log`, etc.).
-    - **Cast Pushdown**: Enables complex joins and expressions by pushing down explicit type casts (`::int4`, `::date`, etc.) directly to DuckDB.
-- **Turbo Architecture**: Vectorized data transfer via Arrow C Data Interface and high-speed ingestion using the **Appender API**.
+The table below reflects the **current implementation status** and required runtime prerequisites.
+
+| Capability | Status | Validation Evidence | Prerequisites |
+| :--- | :--- | :--- | :--- |
+| Native DuckDB C API integration | Implemented | `duckdb_fdw.c`, `connection.c` | DuckDB shared library |
+| Chunk-based scan iteration | Implemented | `duckdbBeginForeignScan`, `duckdbIterateForeignScan` | PostgreSQL 13+ |
+| Prepared parameter binding (`?`) | Implemented | `duckdb_execute_query` bind path | Pushdown query with params |
+| Appender insert path | Implemented | `duckdbBeginForeignModify`, `duckdbExecForeignInsert` | Writable foreign table |
+| Batch insert hooks (PG14+) | Implemented | `ExecForeignBatchInsert`, `GetForeignModifyBatchSize` | PostgreSQL 14+ |
+| Secret helper (`duckdb_create_s3_secret`) | Implemented | SQL function + `duckdb_fdw.c` | S3 credentials |
+| Iceberg/S3 examples | Partial | `examples/07-13` | Network, optional credentials |
+| Full Arrow C Data scan path | Planned | tracked in OpenSpec change | future release |
+
+## 🧪 Test Profiles
+
+- `core`: deterministic offline suite (default)
+- `integration`: network/public dataset suite
+- `cloud`: credential-required cloud suite
+- `all`: run all tiers
+
+```bash
+./run_tests.sh --profile core
+./run_tests.sh --profile integration
+./run_tests.sh --profile cloud
+```
 
 ## 📦 Installation
 

@@ -26,7 +26,7 @@ typedef struct DuckDBFdwRelationInfo
 	 * True means that the relation can be pushed down to the foreign server.
 	 */
 	bool		pushdown_safe;
-    
+
     /*
      * Foreign table OID.
      */
@@ -68,21 +68,28 @@ typedef struct DuckDBFdwExecState
     duckdb_result res;
     duckdb_data_chunk current_chunk;
     idx_t current_chunk_idx;
-    
+    int64_t     global_row_idx;
+    bool        use_chunk_scan;
+    bool        use_prepared_stmt;
+    duckdb_prepared_statement prepared_stmt;
+
 	char	   *query;
 	TupleDesc	tupdesc;
     AttInMetadata *attinmeta;
 	List	   *retrieved_attrs;
-	
+    List       *param_expr_states;
+    List       *param_exprs;
+
     /* Iteration state */
-    int64_t     current_chunk_row_idx; 
-    int64_t     current_chunk_row_count; 
+    int64_t     current_chunk_row_idx;
+    int64_t     current_chunk_row_count;
     bool        is_started;
 
     /* Appender state */
     duckdb_appender appender;
     int64_t     batch_row_count;
     char       *table_name;
+    bool        use_appender;
 } DuckDBFdwExecState;
 
 /* Exported functions */
@@ -93,6 +100,12 @@ extern Datum duckdb_execute(PG_FUNCTION_ARGS);
 extern Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS);
 extern List *duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid);
 extern duckdb_opt * duckdb_get_options(Oid foreigntableid);
+extern char *duckdb_fdw_quote_literal(const char *input);
+extern char *duckdb_fdw_quote_identifier(const char *input);
+extern bool duckdb_fdw_is_valid_identifier(const char *input);
+extern bool duckdb_fdw_is_safe_sql_fragment(const char *input);
+extern char *duckdb_fdw_redact_secret_text(const char *input);
+extern char *duckdb_fdw_trim_token(char *token);
 
 /* Internal functions */
 extern void duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level);
