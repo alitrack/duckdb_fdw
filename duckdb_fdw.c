@@ -28,6 +28,11 @@ PG_MODULE_MAGIC;
 #define DUCKDB_EPOCH_DIFF_DAYS 10957
 #define DUCKDB_EPOCH_DIFF_MICROS INT64CONST(946684800000000)
 
+static void duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreignrel,
+										   List *param_join_conds, List *pathkeys,
+										   void *fpextra, double *p_rows, int *p_width,
+										   Cost *p_startup_cost, Cost *p_total_cost);
+
 static char *
 duckdb_build_relation_reference(const char *table_name)
 {
@@ -428,10 +433,13 @@ duckdbGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
      */
     if (foreign_join_ok(root, joinrel, jointype, outerrel, innerrel, extra))
     {
-        double      rows = joinrel->rows;
-        Cost        startup_cost = 0;
-        Cost        total_cost = rows;
+        DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *) joinrel->fdw_private;
+        double      rows;
+        Cost        startup_cost;
+        Cost        total_cost;
 
+        duckdb_estimate_path_cost_size(root, joinrel, fpinfo->joinclauses, NIL, NULL,
+                                       &rows, NULL, &startup_cost, &total_cost);
         add_path(joinrel, (Path *)
                  create_foreignscan_path(root, joinrel,
                                           joinrel->reltarget,
@@ -521,16 +529,18 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
 static void
 duckdbGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid)
 {
-    /*
-     * Create a ForeignPath node and add it as only possible path.  We use the
-     * same cost as for a regular scan, but without any cpu_tuple_cost.
-     */
+    double      rows;
+    Cost        startup_cost;
+    Cost        total_cost;
+
+    duckdb_estimate_path_cost_size(root, baserel, NIL, NIL, NULL,
+                                   &rows, NULL, &startup_cost, &total_cost);
     add_path(baserel, (Path *)
              create_foreignscan_path(root, baserel,
                                      baserel->reltarget,
-                                     baserel->rows,
-                                     10,
-                                     baserel->rows + 10,
+                                     rows,
+                                     startup_cost,
+                                     total_cost,
                                      NIL,   /* no pathkeys */
                                      NULL,  /* no required_outer */
                                      NULL,  /* no fdw_outerpath */
@@ -838,12 +848,20 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
 
     if (duckdb_is_foreign_expr(root, output_rel, (Expr *) output_rel->reltarget->exprs))
     {
+        double rows;
+        Cost startup_cost;
+        Cost total_cost;
+
         fpinfo->pushdown_safe = true;
+        duckdb_estimate_path_cost_size(root, output_rel, NIL, NIL, NULL,
+                                       &rows, NULL, &startup_cost, &total_cost);
         add_path(output_rel, (Path *)
                  create_foreignscan_path(root, output_rel,
                                           output_rel->reltarget,
-                                          output_rel->rows,
-                                          10, 20, NIL,
+                                          rows,
+                                          startup_cost,
+                                          total_cost,
+                                          NIL,
                                           NULL, NULL, NIL));
     }
 }
@@ -860,90 +878,6 @@ static List *
 duckdbPlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index resultRelation, int subplan_index)
 {
     return NIL;
-}
-
-static bool
-duckdbPlanDirectModify(PlannerInfo *root,
-                       ModifyTable *plan,
-                       Index resultRelation,
-                       int subplan_index)
-{
-    RelOptInfo *foreignrel = root->simple_rel_array[resultRelation];
-    DuckDBFdwRelationInfo *fpinfo = (DuckDBFdwRelationInfo *) foreignrel->fdw_private;
-
-    /*
-     * If the modify is pushable, return true.
-     */
-    if (fpinfo->pushdown_safe && fpinfo->local_conds == NIL)
-        return true;
-
-    return false;
-}
-
-static void
-duckdbBeginDirectModify(ForeignScanState *node, int eflags)
-{
-    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
-    ForeignScan *fsplan = (ForeignScan *)node->ss.ps.plan;
-    EState     *estate = node->ss.ps.state;
-    ResultRelInfo *resultRelInfo = estate->es_result_relations[fsplan->resultRelation - 1];
-    Relation    rel;
-    Oid         serverid;
-    StringInfoData sql;
-    List       *retrieved_attrs = NIL;
-    List       *params_list = NIL;
-
-    if (resultRelInfo == NULL)
-        elog(ERROR, "duckdb_fdw: no result relation for direct modify");
-
-    rel = resultRelInfo->ri_RelationDesc;
-    serverid = GetForeignTable(RelationGetRelid(rel))->serverid;
-
-    initStringInfo(&sql);
-    node->fdw_state = (void *)festate;
-    festate->conn = duckdb_get_connection(GetForeignServer(serverid), false);
-
-    if (fsplan->operation == CMD_UPDATE)
-    {
-        duckdb_deparse_direct_update_sql(&sql, NULL, /* root */
-                                          fsplan->scan.scanrelid, rel,
-                                          NULL, /* foreignrel */
-                                          fsplan->fdw_scan_tlist,
-                                          fsplan->fdw_scan_tlist, /* targetAttrs */
-                                          fsplan->scan.plan.qual,
-                                          &params_list, &retrieved_attrs);
-    }
-    else if (fsplan->operation == CMD_DELETE)
-    {
-        duckdb_deparse_direct_delete_sql(&sql, NULL, /* root */
-                                          fsplan->scan.scanrelid, rel,
-                                          NULL, /* foreignrel */
-                                          fsplan->scan.plan.qual,
-                                          &params_list, &retrieved_attrs);
-    }
-
-    festate->query = sql.data;
-}
-
-static TupleTableSlot *
-duckdbIterateDirectModify(ForeignScanState *node)
-{
-    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
-    duckdb_result res;
-
-    if (duckdb_query(festate->conn, festate->query, &res) == DuckDBError)
-    {
-        const char *err = duckdb_result_error(&res);
-        elog(ERROR, "duckdb_fdw: direct modify failed: %s", err ? err : "unknown error");
-    }
-    duckdb_destroy_result(&res);
-
-    return ExecClearTuple(node->ss.ss_ScanTupleSlot);
-}
-
-static void
-duckdbEndDirectModify(ForeignScanState *node)
-{
 }
 
 static void
@@ -1225,4 +1159,33 @@ duckdb_find_em_expr_for_input_target(PlannerInfo *root,
 }
 
 void _PG_init(void) {}
-void duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreignrel, List *param_join_conds, List *pathkeys, void *fpextra, double *p_rows, int *p_width, Cost *p_startup_cost, Cost *p_total_cost) {}
+static void
+duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreignrel, List *param_join_conds, List *pathkeys, void *fpextra, double *p_rows, int *p_width, Cost *p_startup_cost, Cost *p_total_cost)
+{
+    DuckDBFdwRelationInfo *fpinfo = foreignrel ? (DuckDBFdwRelationInfo *) foreignrel->fdw_private : NULL;
+    double rows = (fpinfo && fpinfo->rows > 0) ? fpinfo->rows : (foreignrel ? foreignrel->rows : 1000.0);
+    int width = (fpinfo && fpinfo->width > 0) ? fpinfo->width : (foreignrel ? foreignrel->reltarget->width : 0);
+    Cost startup_cost = 10.0;
+    Cost total_cost;
+
+    (void) root;
+    (void) fpextra;
+
+    if (rows <= 0)
+        rows = 1000.0;
+
+    total_cost = startup_cost + rows * (cpu_tuple_cost + cpu_operator_cost);
+    if (param_join_conds != NIL)
+        total_cost += list_length(param_join_conds) * rows * cpu_operator_cost;
+    if (pathkeys != NIL)
+        total_cost += rows * cpu_operator_cost;
+
+    if (p_rows)
+        *p_rows = rows;
+    if (p_width)
+        *p_width = width;
+    if (p_startup_cost)
+        *p_startup_cost = startup_cost;
+    if (p_total_cost)
+        *p_total_cost = total_cost;
+}

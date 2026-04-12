@@ -15,10 +15,57 @@ typedef struct ConnCacheEntry
 	ConnCacheKey key;
 	duckdb_database db;
 	duckdb_connection conn;
-	int			xact_depth;
 } ConnCacheEntry;
 
 static HTAB *ConnectionHash = NULL;
+static bool ConnectionXactCallbackRegistered = false;
+
+static void
+duckdb_cleanup_connection_cache(void)
+{
+	HASH_SEQ_STATUS scan;
+	ConnCacheEntry *entry;
+
+	if (ConnectionHash == NULL)
+		return;
+
+	hash_seq_init(&scan, ConnectionHash);
+	while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)) != NULL)
+	{
+		if (entry->conn)
+		{
+			duckdb_disconnect(&entry->conn);
+			entry->conn = NULL;
+		}
+		if (entry->db)
+		{
+			duckdb_close(&entry->db);
+			entry->db = NULL;
+		}
+	}
+}
+
+static void
+duckdb_connection_xact_callback(XactEvent event, void *arg)
+{
+	(void) arg;
+
+	switch (event)
+	{
+		case XACT_EVENT_COMMIT:
+		case XACT_EVENT_ABORT:
+		case XACT_EVENT_PRE_COMMIT:
+		case XACT_EVENT_PREPARE:
+		case XACT_EVENT_PRE_PREPARE:
+		case XACT_EVENT_PARALLEL_COMMIT:
+		case XACT_EVENT_PARALLEL_ABORT:
+		case XACT_EVENT_PARALLEL_PRE_COMMIT:
+			duckdb_cleanup_connection_cache();
+			break;
+		default:
+			break;
+	}
+}
 
 static void
 append_endpoint_clause(StringInfo sql, const char *s3_endpoint, const char *s3_region)
@@ -312,6 +359,11 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 		ctl.hcxt = CacheMemoryContext;
 		ConnectionHash = hash_create("duckdb_fdw connections", 8, &ctl, HASH_ELEM | HASH_BLOBS);
 	}
+	if (!ConnectionXactCallbackRegistered)
+	{
+		RegisterXactCallback(duckdb_connection_xact_callback, NULL);
+		ConnectionXactCallbackRegistered = true;
+	}
 
 	key = server->serverid;
 	entry = hash_search(ConnectionHash, &key, HASH_ENTER, &found);
@@ -329,11 +381,10 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 
         if (duckdb_open(dbpath, &entry->db) == DuckDBError)
             elog(ERROR, "failed to open DuckDB");
-        if (duckdb_connect(entry->db, &entry->conn) == DuckDBError)
-            elog(ERROR, "failed to connect to DuckDB");
+	        if (duckdb_connect(entry->db, &entry->conn) == DuckDBError)
+	            elog(ERROR, "failed to connect to DuckDB");
 
-        duckdb_setup_secrets_and_extensions(entry->conn, server);
-        entry->xact_depth = 0;
+	        duckdb_setup_secrets_and_extensions(entry->conn, server);
 	}
 	return entry->conn;
 }

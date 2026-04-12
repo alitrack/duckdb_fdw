@@ -75,6 +75,26 @@ SELECT stddev(i), variance(j), log(d) FROM test_types GROUP BY s;
 EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM test_types WHERE i = 1;
 SELECT * FROM test_types WHERE i = 1;
 
+-- Server option refresh should use a new DuckDB database after ALTER SERVER
+CREATE SERVER duckdb_switch FOREIGN DATA WRAPPER duckdb_fdw
+OPTIONS (database 'duckdb_switch_one.db');
+SELECT duckdb_execute('duckdb_switch', 'DROP TABLE IF EXISTS switch_test');
+SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
+SELECT duckdb_execute('duckdb_switch', 'INSERT INTO switch_test VALUES (1)');
+ALTER SERVER duckdb_switch OPTIONS (SET database ':memory:');
+SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
+SELECT duckdb_execute('duckdb_switch', 'INSERT INTO switch_test VALUES (2)');
+CREATE FOREIGN TABLE switch_test_ft (
+    i INT4
+) SERVER duckdb_switch OPTIONS (table 'switch_test');
+SELECT * FROM switch_test_ft;
+DROP FOREIGN TABLE switch_test_ft;
+DROP SERVER duckdb_switch CASCADE;
+
+-- Unsupported write paths remain explicit
+UPDATE test_types SET s = 'changed' WHERE i = 1;
+DELETE FROM test_types WHERE i = 1;
+
 -- Cleanup
 DROP FOREIGN TABLE test_types;
 DROP ROLE duckdb_fdw_unprivileged;

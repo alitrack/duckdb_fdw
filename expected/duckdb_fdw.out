@@ -26,15 +26,15 @@ SELECT duckdb_fdw_version() IS NOT NULL;
 
 -- Create a table in DuckDB via DDL function
 SELECT duckdb_execute('duckdb_test', 'CREATE TABLE test_types (i INTEGER, j BIGINT, d DOUBLE, s VARCHAR)');
- duckdb_execute 
+ duckdb_execute
 ----------------
- 
+
 (1 row)
 
 SELECT duckdb_execute('duckdb_test', 'INSERT INTO test_types VALUES (1, 100, 3.14, ''hello''), (2, 200, 6.28, ''world'')');
- duckdb_execute 
+ duckdb_execute
 ----------------
- 
+
 (1 row)
 
 -- Map it to PostgreSQL
@@ -56,8 +56,8 @@ SELECT * FROM test_types ORDER BY i;
 EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM test_types WHERE i = 1;
             QUERY PLAN             
 -----------------------------------
- Foreign Scan on public.test_types
-   Output: i, j, d, s
+Foreign Scan on public.test_types
+  Output: i, j, d, s
 (2 rows)
 
 SELECT * FROM test_types WHERE i = 1;
@@ -65,6 +65,58 @@ SELECT * FROM test_types WHERE i = 1;
 ---+-----+------+-------
  1 | 100 | 3.14 | hello
 (1 row)
+
+-- Server option refresh should use a new DuckDB database after ALTER SERVER
+CREATE SERVER duckdb_switch FOREIGN DATA WRAPPER duckdb_fdw
+OPTIONS (database 'duckdb_switch_one.db');
+SELECT duckdb_execute('duckdb_switch', 'DROP TABLE IF EXISTS switch_test');
+ duckdb_execute
+----------------
+
+(1 row)
+
+SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
+ duckdb_execute
+----------------
+
+(1 row)
+
+SELECT duckdb_execute('duckdb_switch', 'INSERT INTO switch_test VALUES (1)');
+ duckdb_execute
+----------------
+
+(1 row)
+
+ALTER SERVER duckdb_switch OPTIONS (SET database ':memory:');
+SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
+ duckdb_execute
+----------------
+
+(1 row)
+
+SELECT duckdb_execute('duckdb_switch', 'INSERT INTO switch_test VALUES (2)');
+ duckdb_execute
+----------------
+
+(1 row)
+
+CREATE FOREIGN TABLE switch_test_ft (
+    i INT4
+) SERVER duckdb_switch OPTIONS (table 'switch_test');
+SELECT * FROM switch_test_ft;
+ i
+---
+ 2
+(1 row)
+
+DROP FOREIGN TABLE switch_test_ft;
+DROP SERVER duckdb_switch CASCADE;
+
+-- Unsupported write paths remain explicit
+UPDATE test_types SET s = 'changed' WHERE i = 1;
+ERROR:  UPDATE not supported
+DELETE FROM test_types WHERE i = 1;
+ERROR:  DELETE not supported
 
 -- Cleanup
 DROP FOREIGN TABLE test_types;

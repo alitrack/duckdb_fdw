@@ -1,8 +1,5 @@
-# remote-cost-estimation Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change complete-parameter-binding-and-remote-costing. Update Purpose after archive.
-## Requirements
 ### Requirement: `use_remote_estimate` SHALL influence costing when enabled
 If `use_remote_estimate=true`, FDW MUST attempt remote estimation and use results to populate row and cost fields for foreign path creation.
 
@@ -16,4 +13,3 @@ If remote estimation fails, FDW MUST fallback to deterministic local defaults wi
 #### Scenario: Remote estimate call fails
 - **WHEN** remote estimation returns an error
 - **THEN** planner continues with fallback row/cost values and query planning does not error
-
