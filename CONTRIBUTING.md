@@ -21,6 +21,14 @@ To test another DuckDB release explicitly:
 DUCKDB_VERSION=1.4.4 ./download_libduckdb.sh
 ```
 
+For PostgreSQL development prerequisites on Debian/Ubuntu or WSL-style environments:
+
+```bash
+scripts/install_pg_env.sh --pg-major 17
+scripts/install_pg_env.sh --pg-major 17 --apply
+scripts/verify_pg_env.sh --pg-major 17
+```
+
 ## Build
 
 ```bash

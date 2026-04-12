@@ -41,6 +41,11 @@ The table below reflects the **current implementation status** and required runt
 ### Quick Build (Linux/macOS)
 
 ```bash
+# Optional: prepare PostgreSQL development prerequisites on Debian/Ubuntu/WSL
+scripts/install_pg_env.sh --pg-major 17
+scripts/install_pg_env.sh --pg-major 17 --apply
+scripts/verify_pg_env.sh --pg-major 17
+
 # 1. Download DuckDB headers and library
 ./download_libduckdb.sh
 
