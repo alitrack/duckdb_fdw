@@ -449,6 +449,7 @@ duckdbGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
                                           NIL,
                                           joinrel->lateral_relids,
                                           NULL,
+                                          NIL,
                                           NIL));
     }
 }
@@ -544,6 +545,7 @@ duckdbGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid
                                      NIL,   /* no pathkeys */
                                      NULL,  /* no required_outer */
                                      NULL,  /* no fdw_outerpath */
+                                     NIL,   /* no fdw_restrictinfo */
                                      NIL)); /* no fdw_private */
 }
 
@@ -862,7 +864,10 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
                                           startup_cost,
                                           total_cost,
                                           NIL,
-                                          NULL, NULL, NIL));
+                                          NULL,
+                                          NULL,
+                                          NIL,
+                                          NIL));
     }
 }
 

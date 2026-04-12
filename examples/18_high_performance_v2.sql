@@ -3,11 +3,11 @@
 
 CREATE EXTENSION IF NOT EXISTS duckdb_fdw;
 
-CREATE SERVER perf_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
+CREATE SERVER perf_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '/tmp/duckdb_fdw_perf_v2.db');
 
 -- 1. Test Vectorized Reading (Arrow)
 -- Create a table with 10,000 rows (approx 5 Arrow chunks)
-SELECT duckdb_execute('perf_srv', 'CREATE TABLE big_data AS SELECT 
+SELECT duckdb_execute('perf_srv', 'CREATE OR REPLACE TABLE big_data AS SELECT 
     range as id, 
     range * 1.5 as val,
     ''label_'' || (range % 10)::VARCHAR as tag
@@ -26,7 +26,7 @@ GROUP BY tag
 ORDER BY tag;
 
 -- 2. Test High-Speed Batch Ingestion (Appender)
-SELECT duckdb_execute('perf_srv', 'CREATE TABLE target_table (id INT, val FLOAT8, tag TEXT)');
+SELECT duckdb_execute('perf_srv', 'CREATE OR REPLACE TABLE target_table (id INT, val FLOAT8, tag TEXT)');
 
 CREATE FOREIGN TABLE target_remote (
     id INT,

@@ -5,11 +5,11 @@ CREATE EXTENSION IF NOT EXISTS duckdb_fdw;
 
 -- 1. Setup Server
 DROP SERVER IF EXISTS join_srv CASCADE;
-CREATE SERVER join_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
+CREATE SERVER join_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '/tmp/duckdb_fdw_join_pushdown.db');
 
 -- 2. Create source tables in DuckDB
-SELECT duckdb_execute('join_srv', 'CREATE TABLE t1 (id INT, val1 TEXT)');
-SELECT duckdb_execute('join_srv', 'CREATE TABLE t2 (id INT, val2 TEXT)');
+SELECT duckdb_execute('join_srv', 'CREATE OR REPLACE TABLE t1 (id INT, val1 TEXT)');
+SELECT duckdb_execute('join_srv', 'CREATE OR REPLACE TABLE t2 (id INT, val2 TEXT)');
 
 SELECT duckdb_execute('join_srv', 'INSERT INTO t1 VALUES (1, ''a''), (2, ''b'')');
 SELECT duckdb_execute('join_srv', 'INSERT INTO t2 VALUES (1, ''x''), (3, ''y'')');

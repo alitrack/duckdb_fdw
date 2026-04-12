@@ -2,9 +2,9 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS duckdb_fdw;
 
-CREATE SERVER vec_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
+CREATE SERVER vec_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '/tmp/duckdb_fdw_vector_support.db');
 
-SELECT duckdb_execute('vec_srv', 'CREATE TABLE v_demo (id INT, vec FLOAT[3], label TEXT)');
+SELECT duckdb_execute('vec_srv', 'CREATE OR REPLACE TABLE v_demo (id INT, vec FLOAT[3], label TEXT)');
 SELECT duckdb_execute('vec_srv', 'INSERT INTO v_demo VALUES (1, [0.1, 0.5, 0.9], ''Vector Test'')');
 
 CREATE FOREIGN TABLE vec_demo (

@@ -3,7 +3,7 @@ CREATE EXTENSION duckdb_fdw;
 
 -- Create Server
 CREATE SERVER duckdb_test FOREIGN DATA WRAPPER duckdb_fdw
-OPTIONS (database ':memory:');
+OPTIONS (database '/tmp/duckdb_fdw_regress_main.db');
 
 -- Admin helper privilege defaults
 CREATE ROLE duckdb_fdw_unprivileged;
@@ -14,6 +14,7 @@ SELECT has_function_privilege('duckdb_fdw_unprivileged', 'duckdb_create_s3_secre
 SELECT duckdb_fdw_version() IS NOT NULL;
 
 -- Create a table in DuckDB via DDL function
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE IF EXISTS test_types');
 SELECT duckdb_execute('duckdb_test', 'CREATE TABLE test_types (i INTEGER, j BIGINT, d DOUBLE, s VARCHAR)');
 SELECT duckdb_execute('duckdb_test', 'INSERT INTO test_types VALUES (1, 100, 3.14, ''hello''), (2, 200, 6.28, ''world'')');
 
@@ -29,6 +30,7 @@ CREATE FOREIGN TABLE test_types (
 SELECT * FROM test_types ORDER BY i;
 
 -- New Types Support Test (UUID, Decimal, Date, Timestamp)
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE IF EXISTS test_v2');
 SELECT duckdb_execute('duckdb_test', 'CREATE TABLE test_v2 (
     u UUID, 
     d DECIMAL(18,3), 
@@ -81,7 +83,8 @@ OPTIONS (database 'duckdb_switch_one.db');
 SELECT duckdb_execute('duckdb_switch', 'DROP TABLE IF EXISTS switch_test');
 SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
 SELECT duckdb_execute('duckdb_switch', 'INSERT INTO switch_test VALUES (1)');
-ALTER SERVER duckdb_switch OPTIONS (SET database ':memory:');
+ALTER SERVER duckdb_switch OPTIONS (SET database 'duckdb_switch_two.db');
+SELECT duckdb_execute('duckdb_switch', 'DROP TABLE IF EXISTS switch_test');
 SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
 SELECT duckdb_execute('duckdb_switch', 'INSERT INTO switch_test VALUES (2)');
 CREATE FOREIGN TABLE switch_test_ft (

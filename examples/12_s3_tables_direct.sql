@@ -2,18 +2,15 @@
 CREATE EXTENSION IF NOT EXISTS duckdb_fdw;
 
 DROP SERVER IF EXISTS s3_tables_srv CASCADE;
-CREATE SERVER s3_tables_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
+CREATE SERVER s3_tables_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
+    database '/tmp/duckdb_fdw_s3_tables.db',
+    s3_region 'us-east-1',
+    s3_access_key_id 'YOUR_ACCESS_KEY',
+    s3_secret_access_key 'YOUR_SECRET_KEY',
+    attach_catalogs '__my_resource__=arn:aws:s3tables:us-east-1:259911478022:bucket/iceberg-on-the-browser;type iceberg'
+);
 
--- 1. Create Secret via wrapped function
-SELECT duckdb_create_s3_secret('s3_tables_srv', '__my_secret__', 'YOUR_ACCESS_KEY', 'YOUR_SECRET_KEY');
-
--- 2. Attach Resource
-SELECT duckdb_execute('s3_tables_srv', 'ATTACH IF NOT EXISTS ''arn:aws:s3tables:us-east-1:259911478022:bucket/iceberg-on-the-browser'' AS __my_resource__ (TYPE iceberg, ENDPOINT_TYPE ''s3_tables'')');
-
--- 3. Create Table (More stable than view for cross-connection visibility)
-SELECT duckdb_execute('s3_tables_srv', 'CREATE OR REPLACE TABLE __my_view__ AS FROM __my_resource__.tpch10.part');
-
--- 4. Map and Query
+-- 1. Map and Query
 CREATE FOREIGN TABLE my_view_fdw (
     p_partkey BIGINT,
     p_name TEXT,
@@ -24,6 +21,6 @@ CREATE FOREIGN TABLE my_view_fdw (
     p_container TEXT,
     p_retailprice DECIMAL,
     p_comment TEXT
-) SERVER s3_tables_srv OPTIONS (table '__my_view__');
+) SERVER s3_tables_srv OPTIONS (table '__my_resource__.tpch10.part');
 
 SELECT * FROM my_view_fdw OFFSET 0 LIMIT 22;

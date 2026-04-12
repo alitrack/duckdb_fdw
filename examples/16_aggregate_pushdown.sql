@@ -6,11 +6,11 @@ CREATE EXTENSION IF NOT EXISTS duckdb_fdw;
 
 -- 1. Setup Server
 DROP SERVER IF EXISTS agg_srv CASCADE;
-CREATE SERVER agg_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
+CREATE SERVER agg_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '/tmp/duckdb_fdw_aggregate_pushdown.db');
 
 -- 2. Create source data in DuckDB
 SELECT duckdb_execute('agg_srv', '
-    CREATE TABLE sales_data (
+    CREATE OR REPLACE TABLE sales_data (
         category TEXT, 
         amount DOUBLE, 
         quantity INTEGER,

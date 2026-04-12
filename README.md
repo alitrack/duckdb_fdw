@@ -70,8 +70,10 @@ CREATE EXTENSION duckdb_fdw;
 
 CREATE SERVER duckdb_srv 
 FOREIGN DATA WRAPPER duckdb_fdw 
-OPTIONS (database ':memory:');
+OPTIONS (database '/tmp/duckdb_fdw_demo.db');
 ```
+
+`database ':memory:'` 是连接级临时库。现在 `duckdb_fdw` 会在事务结束时刷新缓存连接，因此如果你要先用 `duckdb_execute(...)` 建表/建视图，再在后续 SQL 语句里通过外表读取它们，默认应使用文件型 DuckDB 数据库；如果确实想用 `:memory:`，请把整段建模和查询包在同一个显式事务里。
 
 ### 2. Configure Cloud Credentials (S3)
 ```sql
@@ -98,7 +100,7 @@ IMPORT FOREIGN SCHEMA "tpch" FROM SERVER duckdb_srv INTO remote_tpch;
 
 ```sql
 CREATE SERVER lakehouse_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
-    database ':memory:',
+    database '/tmp/duckdb_fdw_lakehouse.db',
     s3_region 'us-east-1',
     s3_access_key_id 'YOUR_KEY',
     s3_secret_access_key 'YOUR_SECRET',

@@ -6,11 +6,11 @@ CREATE EXTENSION IF NOT EXISTS duckdb_fdw;
 
 -- 1. Setup Server
 DROP SERVER IF EXISTS arrow_srv CASCADE;
-CREATE SERVER arrow_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
+CREATE SERVER arrow_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '/tmp/duckdb_fdw_arrow_vectorized.db');
 
 -- 2. Create source data in DuckDB with mixed types
 SELECT duckdb_execute('arrow_srv', '
-    CREATE TABLE arrow_source (
+    CREATE OR REPLACE TABLE arrow_source (
         id INTEGER, 
         b BOOLEAN, 
         d DATE, 

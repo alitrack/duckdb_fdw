@@ -2,10 +2,10 @@
 DROP EXTENSION IF EXISTS duckdb_fdw CASCADE;
 CREATE EXTENSION duckdb_fdw;
 
-CREATE SERVER duck_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
+CREATE SERVER duck_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '/tmp/duckdb_fdw_complex_types.db');
 
 -- Setup Complex Data
-SELECT duckdb_execute('duck_srv', 'CREATE TABLE complex_test (id INT, vec DOUBLE[], info JSON)');
+SELECT duckdb_execute('duck_srv', 'CREATE OR REPLACE TABLE complex_test (id INT, vec DOUBLE[], info JSON)');
 SELECT duckdb_execute('duck_srv', 'INSERT INTO complex_test VALUES (1, [1.1, 2.2, 3.3], ''{"model": "deepseek"}'')');
 
 -- Map to Postgres

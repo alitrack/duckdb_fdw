@@ -6,10 +6,10 @@ CREATE EXTENSION IF NOT EXISTS duckdb_fdw;
 
 -- 1. Setup Server
 DROP SERVER IF EXISTS write_srv CASCADE;
-CREATE SERVER write_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database ':memory:');
+CREATE SERVER write_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '/tmp/duckdb_fdw_write_perf.db');
 
 -- 2. Create target table in DuckDB
-SELECT duckdb_execute('write_srv', 'CREATE TABLE bulk_target (id INT, val TEXT, d DATE, ok BOOLEAN)');
+SELECT duckdb_execute('write_srv', 'CREATE OR REPLACE TABLE bulk_target (id INT, val TEXT, d DATE, ok BOOLEAN)');
 
 -- 3. Map to Foreign Table
 CREATE FOREIGN TABLE bulk_test (

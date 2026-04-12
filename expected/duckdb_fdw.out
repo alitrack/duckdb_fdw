@@ -2,17 +2,17 @@
 CREATE EXTENSION duckdb_fdw;
 -- Create Server
 CREATE SERVER duckdb_test FOREIGN DATA WRAPPER duckdb_fdw
-OPTIONS (database ':memory:');
+OPTIONS (database '/tmp/duckdb_fdw_regress_main.db');
 -- Admin helper privilege defaults
 CREATE ROLE duckdb_fdw_unprivileged;
 SELECT has_function_privilege('duckdb_fdw_unprivileged', 'duckdb_execute(name,text)', 'EXECUTE');
- has_function_privilege
+ has_function_privilege 
 ------------------------
  f
 (1 row)
 
 SELECT has_function_privilege('duckdb_fdw_unprivileged', 'duckdb_create_s3_secret(name,text,text,text,text)', 'EXECUTE');
- has_function_privilege
+ has_function_privilege 
 ------------------------
  f
 (1 row)
@@ -25,16 +25,22 @@ SELECT duckdb_fdw_version() IS NOT NULL;
 (1 row)
 
 -- Create a table in DuckDB via DDL function
-SELECT duckdb_execute('duckdb_test', 'CREATE TABLE test_types (i INTEGER, j BIGINT, d DOUBLE, s VARCHAR)');
- duckdb_execute
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE IF EXISTS test_types');
+ duckdb_execute 
 ----------------
+ 
+(1 row)
 
+SELECT duckdb_execute('duckdb_test', 'CREATE TABLE test_types (i INTEGER, j BIGINT, d DOUBLE, s VARCHAR)');
+ duckdb_execute 
+----------------
+ 
 (1 row)
 
 SELECT duckdb_execute('duckdb_test', 'INSERT INTO test_types VALUES (1, 100, 3.14, ''hello''), (2, 200, 6.28, ''world'')');
- duckdb_execute
+ duckdb_execute 
 ----------------
-
+ 
 (1 row)
 
 -- Map it to PostgreSQL
@@ -52,13 +58,84 @@ SELECT * FROM test_types ORDER BY i;
  2 | 200 | 6.28 | world
 (2 rows)
 
+-- New Types Support Test (UUID, Decimal, Date, Timestamp)
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE IF EXISTS test_v2');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+SELECT duckdb_execute('duckdb_test', 'CREATE TABLE test_v2 (
+    u UUID, 
+    d DECIMAL(18,3), 
+    dt DATE, 
+    ts TIMESTAMP,
+    b BOOLEAN
+)');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+SELECT duckdb_execute('duckdb_test', 'INSERT INTO test_v2 VALUES (
+    ''550e8400-e29b-41d4-a716-446655440000'', 
+    12345.678, 
+    ''2024-01-01'', 
+    ''2024-01-01 12:34:56'',
+    true
+)');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE test_v2 (
+    u UUID,
+    d NUMERIC(18,3),
+    dt DATE,
+    ts TIMESTAMP,
+    b BOOL
+) SERVER duckdb_test OPTIONS (table 'test_v2');
+SELECT * FROM test_v2;
+                  u                   |     d     |     dt     |            ts            | b 
+--------------------------------------+-----------+------------+--------------------------+---
+ 550e8400-e29b-41d4-a716-446655440000 | 12345.678 | 01-01-2024 | Mon Jan 01 12:34:56 2024 | t
+(1 row)
+
+-- Appender API Test (INSERT)
+INSERT INTO test_types (i, j, d, s) VALUES (3, 300, 9.42, 'appender');
+SELECT * FROM test_types WHERE i = 3;
+ i |  j  |  d   |    s     
+---+-----+------+----------
+ 3 | 300 | 9.42 | appender
+(1 row)
+
+-- Batch Insert API Test (COPY)
+CREATE TABLE local_data (i int, j bigint, d double precision, s text);
+INSERT INTO local_data SELECT g, g*10, g*1.1, 'str' || g FROM generate_series(4, 10) g;
+COPY test_types FROM PROGRAM 'cat' (FORMAT CSV); -- This doesn't work directly like this for FDW
+-- Better: INSERT INTO ... SELECT
+INSERT INTO test_types SELECT * FROM local_data;
+SELECT count(*) FROM test_types;
+ count 
+-------
+    10
+(1 row)
+
+-- Advanced Pushdown Test
+EXPLAIN (VERBOSE, COSTS OFF) 
+SELECT stddev(i), variance(j), log(d) FROM test_types GROUP BY s;
+ERROR:  column "test_types.d" must appear in the GROUP BY clause or be used in an aggregate function
+LINE 2: SELECT stddev(i), variance(j), log(d) FROM test_types GROUP ...
+                                           ^
 -- Filter pushdown test
 EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM test_types WHERE i = 1;
-            QUERY PLAN             
------------------------------------
-Foreign Scan on public.test_types
-  Output: i, j, d, s
-(2 rows)
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
+ Foreign Scan on public.test_types
+   Output: i, j, d, s
+   Remote SQL: SELECT "i", "j", "d", "s" FROM "test_types" WHERE (("i" = 1))
+(3 rows)
 
 SELECT * FROM test_types WHERE i = 1;
  i |  j  |  d   |   s   
@@ -70,56 +147,61 @@ SELECT * FROM test_types WHERE i = 1;
 CREATE SERVER duckdb_switch FOREIGN DATA WRAPPER duckdb_fdw
 OPTIONS (database 'duckdb_switch_one.db');
 SELECT duckdb_execute('duckdb_switch', 'DROP TABLE IF EXISTS switch_test');
- duckdb_execute
+ duckdb_execute 
 ----------------
-
+ 
 (1 row)
 
 SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
- duckdb_execute
+ duckdb_execute 
 ----------------
-
+ 
 (1 row)
 
 SELECT duckdb_execute('duckdb_switch', 'INSERT INTO switch_test VALUES (1)');
- duckdb_execute
+ duckdb_execute 
 ----------------
-
+ 
 (1 row)
 
-ALTER SERVER duckdb_switch OPTIONS (SET database ':memory:');
-SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
- duckdb_execute
+ALTER SERVER duckdb_switch OPTIONS (SET database 'duckdb_switch_two.db');
+SELECT duckdb_execute('duckdb_switch', 'DROP TABLE IF EXISTS switch_test');
+ duckdb_execute 
 ----------------
+ 
+(1 row)
 
+SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
+ duckdb_execute 
+----------------
+ 
 (1 row)
 
 SELECT duckdb_execute('duckdb_switch', 'INSERT INTO switch_test VALUES (2)');
- duckdb_execute
+ duckdb_execute 
 ----------------
-
+ 
 (1 row)
 
 CREATE FOREIGN TABLE switch_test_ft (
     i INT4
 ) SERVER duckdb_switch OPTIONS (table 'switch_test');
 SELECT * FROM switch_test_ft;
- i
+ i 
 ---
  2
 (1 row)
 
 DROP FOREIGN TABLE switch_test_ft;
 DROP SERVER duckdb_switch CASCADE;
-
 -- Unsupported write paths remain explicit
 UPDATE test_types SET s = 'changed' WHERE i = 1;
 ERROR:  UPDATE not supported
 DELETE FROM test_types WHERE i = 1;
 ERROR:  DELETE not supported
-
 -- Cleanup
 DROP FOREIGN TABLE test_types;
 DROP ROLE duckdb_fdw_unprivileged;
 DROP SERVER duckdb_test CASCADE;
+NOTICE:  drop cascades to foreign table test_v2
 DROP EXTENSION duckdb_fdw;
