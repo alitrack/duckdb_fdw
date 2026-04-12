@@ -1,8 +1,20 @@
-Enhancements:
-- Harden SQL construction for secrets, ATTACH catalogs, and extension loading.
-- Add token validation and secret redaction on DuckDB error surfaces.
-- Implement prepared-statement parameter binding for pushdown queries.
-- Add chunk-based scan iteration and Appender-based insert with batch insert hooks.
-- Add `use_remote_estimate` row estimation via remote `COUNT(*)` probe.
-- Introduce tiered test profiles (`core`, `integration`, `cloud`, `all`).
-- Fix upgrade script function signature migration safety and metadata consistency.
+## Unreleased
+
+### Maintenance
+- Restricted admin-like helper execution by default and aligned public capability claims with the code-backed chunk-result read path.
+- Added transaction-scoped connection cache cleanup and routed foreign path creation through a shared costing helper.
+- Added contributor onboarding guidance and deterministic DuckDB bootstrap defaults.
+
+## 2.0.0
+
+### Highlights
+- Native DuckDB C API integration
+- Chunk-based scan iteration over DuckDB result chunks
+- Prepared parameter binding for pushed-down queries
+- Appender-based insert path with batch insert hooks
+- Remote row estimation via `COUNT(*)`
+- Tiered validation profiles (`core`, `integration`, `cloud`, `all`)
+- Upgrade script signature repair and release metadata consistency fixes
+
+### Notes
+- Historical release dates before this maintenance pass were not reconstructed in this file.

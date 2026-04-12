@@ -44,6 +44,9 @@ The table below reflects the **current implementation status** and required runt
 # 1. Download DuckDB headers and library
 ./download_libduckdb.sh
 
+# Or pin a specific DuckDB release explicitly
+DUCKDB_VERSION=1.4.4 ./download_libduckdb.sh
+
 # 2. Build and Install (USE_PGXS is auto-detected)
 make
 sudo make install
@@ -51,7 +54,7 @@ sudo make install
 
 ### Requirements
 * PostgreSQL 13 - 18 (headers required)
-* DuckDB library (`libduckdb.so` or `libduckdb.dylib`) v1.0.0+
+* DuckDB library (`libduckdb.so` or `libduckdb.dylib`) with repo-pinned bootstrap default `1.4.3`
 * GCC or Clang with C11/C++11 support
 
 ## 🛠️ Usage

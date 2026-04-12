@@ -218,16 +218,17 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 		 * If this is a dotted identifier chain, quote each simple segment.
 		 * Quoted complex names are passed through as-is.
 		 */
-		if (strchr(relname, '"') == NULL)
-		{
-			char *token;
-			bool first = true;
-
-			relname_copy = pstrdup(relname);
-			token = strtok(relname_copy, ".");
-			while (token)
+			if (strchr(relname, '"') == NULL)
 			{
-				char *trimmed = duckdb_fdw_trim_token(token);
+				char *token;
+				char *saveptr = NULL;
+				bool first = true;
+
+				relname_copy = pstrdup(relname);
+				token = duckdb_fdw_next_token(relname_copy, ".", &saveptr);
+				while (token)
+				{
+					char *trimmed = duckdb_fdw_trim_token(token);
 
 				if (!first)
 					appendStringInfoChar(buf, '.');
@@ -238,10 +239,10 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 				else
 					appendStringInfo(buf, "%s", trimmed);
 
-				token = strtok(NULL, ".");
+					token = duckdb_fdw_next_token(NULL, ".", &saveptr);
+				}
+				pfree(relname_copy);
 			}
-			pfree(relname_copy);
-		}
 		else
 		{
 			appendStringInfo(buf, "%s", relname);

@@ -150,25 +150,26 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         if (need_httpfs) duckdb_do_sql_command(conn, "INSTALL 'httpfs'; LOAD 'httpfs';", ERROR);
         if (need_iceberg) duckdb_do_sql_command(conn, "INSTALL 'iceberg'; LOAD 'iceberg';", ERROR);
 
-        /* Also load any manually specified extensions */
-	        if (extensions)
-	        {
-	            char *ext_copy = pstrdup(extensions);
-	            char *token = strtok(ext_copy, ",");
-	            while (token)
-	            {
-	                char *trimmed = duckdb_fdw_trim_token(token);
-	                if (trimmed[0] == '\0')
-	                {
-	                    token = strtok(NULL, ",");
-	                    continue;
-	                }
-	                if (strcmp(trimmed, "httpfs") != 0 && strcmp(trimmed, "iceberg") != 0)
-	                    install_extension_if_valid(conn, trimmed);
-	                token = strtok(NULL, ",");
-	            }
-	            pfree(ext_copy);
-	        }
+	        /* Also load any manually specified extensions */
+		        if (extensions)
+		        {
+		            char *ext_copy = pstrdup(extensions);
+		            char *saveptr = NULL;
+		            char *token = duckdb_fdw_next_token(ext_copy, ",", &saveptr);
+		            while (token)
+		            {
+		                char *trimmed = duckdb_fdw_trim_token(token);
+		                if (trimmed[0] == '\0')
+		                {
+		                    token = duckdb_fdw_next_token(NULL, ",", &saveptr);
+		                    continue;
+		                }
+		                if (strcmp(trimmed, "httpfs") != 0 && strcmp(trimmed, "iceberg") != 0)
+		                    install_extension_if_valid(conn, trimmed);
+		                token = duckdb_fdw_next_token(NULL, ",", &saveptr);
+		            }
+		            pfree(ext_copy);
+		        }
 	    }
 
     /* 3. Secrets (Support S3 Tables) */
@@ -204,7 +205,8 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 	    if (attach_catalogs)
 	    {
 	        char *at_copy = pstrdup(attach_catalogs);
-	        char *token = strtok(at_copy, ",");
+	        char *saveptr = NULL;
+	        char *token = duckdb_fdw_next_token(at_copy, ",", &saveptr);
 	        while (token)
 	        {
 	            char *name = duckdb_fdw_trim_token(token);
@@ -337,10 +339,10 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 	                    }
 	                }
 	            }
-	            token = strtok(NULL, ",");
+	            token = duckdb_fdw_next_token(NULL, ",", &saveptr);
 	        }
-        pfree(at_copy);
-    }
+	        pfree(at_copy);
+	    }
 }
 
 duckdb_connection

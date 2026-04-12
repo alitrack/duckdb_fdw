@@ -106,6 +106,7 @@ extern bool duckdb_fdw_is_valid_identifier(const char *input);
 extern bool duckdb_fdw_is_safe_sql_fragment(const char *input);
 extern char *duckdb_fdw_redact_secret_text(const char *input);
 extern char *duckdb_fdw_trim_token(char *token);
+extern char *duckdb_fdw_next_token(char *str, const char *delim, char **saveptr);
 
 /* Internal functions */
 extern void duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level);
@@ -117,8 +118,6 @@ extern Datum duckdb_convert_to_pg(Oid pgtyp, int pgtypmod, duckdb_result *res, i
 
 /* Deparse functions */
 extern void duckdb_deparse_select_stmt_for_rel(StringInfo buf, PlannerInfo *root, RelOptInfo *rel, List *tlist, List *remote_conds, List *pathkeys, bool has_final_sort, bool has_limit, bool is_subquery, List **retrieved_attrs, List **params_list);
-extern void duckdb_deparse_direct_update_sql(StringInfo buf, PlannerInfo *root, Index rtindex, Relation rel, RelOptInfo *foreignrel, List *targetlist, List *targetAttrs, List *remote_conds, List **params_list, List **retrieved_attrs);
-extern void duckdb_deparse_direct_delete_sql(StringInfo buf, PlannerInfo *root, Index rtindex, Relation rel, RelOptInfo *foreignrel, List *remote_conds, List **params_list, List **retrieved_attrs);
 extern List *duckdb_build_tlist_to_deparse(RelOptInfo *foreignrel);
 extern void duckdb_classify_conditions(PlannerInfo *root, RelOptInfo *baserel, List *input_conds, List **remote_conds, List **local_conds);
 extern bool duckdb_is_foreign_expr(PlannerInfo *root, RelOptInfo *baserel, Expr *expr);

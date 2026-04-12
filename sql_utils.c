@@ -136,3 +136,13 @@ duckdb_fdw_trim_token(char *token)
 	}
 	return token;
 }
+
+char *
+duckdb_fdw_next_token(char *str, const char *delim, char **saveptr)
+{
+#ifdef _WIN32
+	return strtok_s(str, delim, saveptr);
+#else
+	return strtok_r(str, delim, saveptr);
+#endif
+}

@@ -1,8 +1,12 @@
 #!/bin/bash
 
-# Function to get latest release version
-get_latest_version() {
-    curl --silent "https://api.github.com/repos/duckdb/duckdb/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'
+DEFAULT_DUCKDB_VERSION="1.4.3"
+
+normalize_version_tag() {
+    case "$1" in
+        v*) echo "$1" ;;
+        *) echo "v$1" ;;
+    esac
 }
 
 # Function to get system info
@@ -44,10 +48,9 @@ get_system_info() {
 # Get system information
 get_system_info
 
-# Get latest version
-VERSION=$(get_latest_version)
-# Remove 'v' prefix from version for filename
-DUCKDB_VERSION=${VERSION#v}
+# Resolve requested version
+REQUESTED_VERSION=${DUCKDB_VERSION:-$DEFAULT_DUCKDB_VERSION}
+VERSION=$(normalize_version_tag "$REQUESTED_VERSION")
 
 
 
@@ -62,4 +65,3 @@ curl -L -o duckdb-temp.zip "${DOWNLOAD_URL}"
 unzip -o duckdb-temp.zip
 
 rm duckdb-temp.zip
-
