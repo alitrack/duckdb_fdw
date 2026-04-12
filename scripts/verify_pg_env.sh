@@ -43,6 +43,22 @@ fail() {
     FAILURES=$((FAILURES + 1))
 }
 
+resolve_pg_tool() {
+    local tool="$1"
+
+    if command -v "${tool}" >/dev/null 2>&1; then
+        command -v "${tool}"
+        return 0
+    fi
+
+    if [[ -n "${BINDIR:-}" && -x "${BINDIR}/${tool}" ]]; then
+        printf '%s\n' "${BINDIR}/${tool}"
+        return 0
+    fi
+
+    return 1
+}
+
 if command -v pg_config >/dev/null 2>&1; then
     PG_CONFIG_PATH="$(command -v pg_config)"
     PG_CONFIG_VERSION="$(pg_config --version 2>/dev/null || true)"
@@ -75,8 +91,8 @@ if command -v pg_config >/dev/null 2>&1; then
 fi
 
 for tool in psql pg_ctl initdb; do
-    if command -v "${tool}" >/dev/null 2>&1; then
-        pass "找到 ${tool}: $(command -v "${tool}")"
+    if TOOL_PATH="$(resolve_pg_tool "${tool}")"; then
+        pass "找到 ${tool}: ${TOOL_PATH}"
     else
         fail "未找到 ${tool}"
     fi

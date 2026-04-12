@@ -1,8 +1,5 @@
-# pg-development-environment-bootstrap Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change pg-environment-bootstrap-scripts. Update Purpose after archive.
-## Requirements
 ### Requirement: Repository SHALL provide PostgreSQL development environment bootstrap scripts
 The repository MUST include scripts that prepare and verify PostgreSQL development prerequisites for supported Debian/Ubuntu-style environments.
 
@@ -13,11 +10,3 @@ The repository MUST include scripts that prepare and verify PostgreSQL developme
 #### Scenario: PostgreSQL tools are installed under bindir but not exported on PATH
 - **WHEN** `pg_ctl` and `initdb` exist under `pg_config --bindir` but are not on the shell `PATH`
 - **THEN** the verification script reports those tools as present using the resolved bindir paths
-
-### Requirement: Environment bootstrap SHALL avoid accidental package installation by default
-Bootstrap scripts with package-management side effects MUST require an explicit opt-in before running installation commands.
-
-#### Scenario: Contributor inspects planned installation steps
-- **WHEN** a contributor runs the PostgreSQL bootstrap script without the apply flag
-- **THEN** the script prints the planned repository/package steps and exits without changing the system
-
