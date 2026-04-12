@@ -32,7 +32,12 @@ append_endpoint_clause(StringInfo sql, const char *s3_endpoint, const char *s3_r
 	}
 	else if (s3_region)
 	{
-		appendStringInfo(sql, ", ENDPOINT 's3tables.%s.amazonaws.com'", s3_region);
+		char *endpoint = psprintf("s3tables.%s.amazonaws.com", s3_region);
+		char *endpoint_lit = duckdb_fdw_quote_literal(endpoint);
+
+		appendStringInfo(sql, ", ENDPOINT %s", endpoint_lit);
+		pfree(endpoint);
+		pfree(endpoint_lit);
 	}
 }
 
@@ -337,11 +342,23 @@ void
 duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level)
 {
 	duckdb_result res;
+	MemSet(&res, 0, sizeof(res));
 	if (duckdb_query(conn, sql, &res) == DuckDBError)
 	{
 		const char *err = duckdb_result_error(&res);
 		char *safe_err = duckdb_fdw_redact_secret_text(err ? err : "error");
-		ereport(level, (errcode(ERRCODE_FDW_ERROR), errmsg("DuckDB: %s", safe_err)));
+
+		PG_TRY();
+		{
+			ereport(level, (errcode(ERRCODE_FDW_ERROR), errmsg("DuckDB: %s", safe_err)));
+		}
+		PG_FINALLY();
+		{
+			duckdb_destroy_result(&res);
+			pfree(safe_err);
+		}
+		PG_END_TRY();
+		return;
 	}
 	duckdb_destroy_result(&res);
 }

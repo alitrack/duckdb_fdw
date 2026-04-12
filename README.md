@@ -21,7 +21,7 @@ The table below reflects the **current implementation status** and required runt
 | Batch insert hooks (PG14+) | Implemented | `ExecForeignBatchInsert`, `GetForeignModifyBatchSize` | PostgreSQL 14+ |
 | Secret helper (`duckdb_create_s3_secret`) | Implemented | SQL function + `duckdb_fdw.c` | S3 credentials |
 | Iceberg/S3 examples | Partial | `examples/07-13` | Network, optional credentials |
-| Full Arrow C Data scan path | Planned | tracked in OpenSpec change | future release |
+| Full Arrow C Data scan path | Planned | no `duckdb_query_arrow` call in active scan path; tracked as future work | future release |
 
 ## 🧪 Test Profiles
 
@@ -110,13 +110,13 @@ SELECT * FROM part WHERE p_partkey = 1;
 | Feature | v1.x (Legacy) | v2.0+ (Native) |
 | :--- | :--- | :--- |
 | **Kernel Interface** | SQLite Compatibility | **Native DuckDB C API** |
-| **Data Transfer** | Row-by-row | **Vectorized (Arrow)** |
+| **Data Transfer** | Row-by-row | **Chunk-based result scan via DuckDB C API** |
 | **Type Mapping** | Limited (Text-heavy) | **Full (Decimal/HugeInt/etc)** |
 | **Cloud Security** | Plaintext Keys | **Integrated Secret Manager** |
 | **Performance** | Basic | **Filter & Limit Pushdown** |
 
 ## 🤝 Contributing
-Contributions are welcome! Focus areas: Zero-copy memory mapping via Nanoarrow and broader extension support.
+Contributions are welcome. Current high-priority areas are production hardening, deterministic regression coverage, and eventually a true Arrow C Data read path.
 
 ## 📄 License
 [MIT License](LICENSE)

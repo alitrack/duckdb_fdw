@@ -1,8 +1,5 @@
-# safe-duckdb-sql-construction Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change harden-sql-generation-and-credential-safety. Update Purpose after archive.
-## Requirements
 ### Requirement: Dynamic SQL inputs SHALL be escaped or validated before execution
 All user-controlled values included in generated DuckDB SQL MUST be passed through approved escaping helpers (for literals/identifiers) or strict token validation before query execution, including planner/analyze SQL generation and derived endpoint literals.
 
@@ -24,4 +21,3 @@ SQL assembly sites in FDW code MUST call shared helper APIs for escaping/validat
 #### Scenario: New SQL builder path uses helper
 - **WHEN** a new SQL statement is introduced in the codebase
 - **THEN** static checks and tests confirm helper usage and fail if raw interpolation is used for user-controlled inputs
-

@@ -1,8 +1,5 @@
-# verifiable-feature-documentation Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change align-docs-with-verified-capabilities. Update Purpose after archive.
-## Requirements
 ### Requirement: Public feature claims SHALL be evidence-backed
 Major feature claims in project documentation MUST include references to implementation and/or regression tests, and MUST distinguish between implemented chunk-result scanning and the still-unimplemented full Arrow C Data path.
 
@@ -16,4 +13,3 @@ For features that are partial or pending, documentation MUST explicitly list kno
 #### Scenario: Partial feature disclosure
 - **WHEN** a feature is incomplete
 - **THEN** README, TODO, or release notes identify unsupported cases and expected behavior boundaries instead of marking the capability as complete
-

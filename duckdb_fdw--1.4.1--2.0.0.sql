@@ -15,6 +15,9 @@ CREATE FUNCTION IF NOT EXISTS duckdb_create_s3_secret(server name, secret_name t
   RETURNS void
   AS 'MODULE_PATHNAME' LANGUAGE C;
 
+REVOKE EXECUTE ON FUNCTION duckdb_execute(name, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION duckdb_create_s3_secret(name, text, text, text, text) FROM PUBLIC;
+
 DROP FUNCTION IF EXISTS duckdb_fdw_get_connections();
 DROP FUNCTION IF EXISTS duckdb_fdw_disconnect(text);
 DROP FUNCTION IF EXISTS duckdb_fdw_disconnect_all();

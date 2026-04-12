@@ -118,6 +118,7 @@ duckdb_get_options(Oid foreignoid)
 	}
 	PG_CATCH();
 	{
+		FlushErrorState();
 		f_table = NULL;
 		f_server = GetForeignServer(foreignoid);
 	}

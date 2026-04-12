@@ -1876,10 +1876,15 @@ duckdb_rebuild_insert(StringInfo buf, Relation rel, char *orig_query,
 void
 duckdb_deparse_analyze(StringInfo sql, char *dbname, char *relname)
 {
+	char *dbname_lit = duckdb_fdw_quote_literal(dbname);
+	char *relname_lit = duckdb_fdw_quote_literal(relname);
+
 	appendStringInfo(sql, "SELECT");
 	appendStringInfo(sql, " round(((data_length + index_length)), 2)");
 	appendStringInfo(sql, " FROM information_schema.TABLES");
-	appendStringInfo(sql, " WHERE table_schema = '%s' AND table_name = '%s'", dbname, relname);
+	appendStringInfo(sql, " WHERE table_schema = %s AND table_name = %s", dbname_lit, relname_lit);
+	pfree(dbname_lit);
+	pfree(relname_lit);
 }
 
 /*

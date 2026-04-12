@@ -3,6 +3,20 @@ CREATE EXTENSION duckdb_fdw;
 -- Create Server
 CREATE SERVER duckdb_test FOREIGN DATA WRAPPER duckdb_fdw
 OPTIONS (database ':memory:');
+-- Admin helper privilege defaults
+CREATE ROLE duckdb_fdw_unprivileged;
+SELECT has_function_privilege('duckdb_fdw_unprivileged', 'duckdb_execute(name,text)', 'EXECUTE');
+ has_function_privilege
+------------------------
+ f
+(1 row)
+
+SELECT has_function_privilege('duckdb_fdw_unprivileged', 'duckdb_create_s3_secret(name,text,text,text,text)', 'EXECUTE');
+ has_function_privilege
+------------------------
+ f
+(1 row)
+
 -- Test version function
 SELECT duckdb_fdw_version() IS NOT NULL;
  ?column? 
@@ -54,5 +68,6 @@ SELECT * FROM test_types WHERE i = 1;
 
 -- Cleanup
 DROP FOREIGN TABLE test_types;
+DROP ROLE duckdb_fdw_unprivileged;
 DROP SERVER duckdb_test CASCADE;
 DROP EXTENSION duckdb_fdw;

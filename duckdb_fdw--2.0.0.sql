@@ -26,5 +26,8 @@ CREATE FUNCTION duckdb_create_s3_secret(server name, secret_name text, key_id te
 RETURNS void
 AS 'MODULE_PATHNAME' LANGUAGE C;
 
+REVOKE EXECUTE ON FUNCTION duckdb_execute(name, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION duckdb_create_s3_secret(name, text, text, text, text) FROM PUBLIC;
+
 COMMENT ON FUNCTION duckdb_execute(name, text)
 IS 'executes an arbitrary SQL statement on DuckDB';

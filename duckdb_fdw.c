@@ -497,6 +497,7 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
         char *relation_ref = duckdb_build_relation_reference(options->svr_table);
         bool query_ok = false;
 
+        MemSet(&count_res, 0, sizeof(count_res));
         initStringInfo(&count_sql);
         appendStringInfo(&count_sql, "SELECT COUNT(*) FROM %s", relation_ref);
         if (duckdb_query(conn, count_sql.data, &count_res) == DuckDBSuccess)
@@ -508,8 +509,7 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
             if (count_rows > 0)
                 baserel->rows = (double) count_rows;
         }
-        if (query_ok)
-            duckdb_destroy_result(&count_res);
+        duckdb_destroy_result(&count_res);
         pfree(relation_ref);
         pfree(count_sql.data);
     }

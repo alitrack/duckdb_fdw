@@ -1,8 +1,5 @@
-# capability-status-matrix Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change align-docs-with-verified-capabilities. Update Purpose after archive.
-## Requirements
 ### Requirement: Documentation SHALL publish a capability status matrix
 Project docs MUST include a matrix indicating feature status (`implemented`, `partial`, `planned`) with prerequisites and validation evidence, and the matrix MUST separately label the implemented chunk-result scan path and the planned full Arrow C Data path.
 
@@ -16,4 +13,3 @@ Each example script MUST be tagged with required prerequisites (offline/network/
 #### Scenario: Developer runs examples locally
 - **WHEN** developer chooses an example based on tags
 - **THEN** prerequisite mismatch is minimized and failures are predictable
-
