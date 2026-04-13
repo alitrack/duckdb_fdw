@@ -1,5 +1,6 @@
 #include "postgres.h"
 #include "duckdb_fdw.h"
+#include "access/xact.h"
 #include "utils/uuid.h"
 #include "utils/numeric.h"
 #include "access/reloptions.h"
@@ -1182,12 +1183,23 @@ duckdb_fdw_check_unsupported_pg_duckdb_coexistence(bool *newval, void **extra, G
 	if (!*newval)
 		return true;
 
-	if (source == PGC_S_SESSION)
-		return true;
+	if (source != PGC_S_SESSION)
+	{
+		GUC_check_errmsg("duckdb_fdw.allow_unsupported_pg_duckdb_coexistence may only be enabled with SET in the current session");
+		GUC_check_errdetail("Persistent, placeholder, and startup-time sources are intentionally rejected for this unsupported override.");
+		GUC_check_errhint("Load duckdb_fdw in the target backend first, then run SET duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on.");
+		return false;
+	}
 
-	GUC_check_errdetail("duckdb_fdw.allow_unsupported_pg_duckdb_coexistence may only be enabled with SET in the current session.");
-	GUC_check_errhint("Load duckdb_fdw in the target backend first, then run SET duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on for that session only.");
-	return false;
+	if (IsTransactionBlock())
+	{
+		GUC_check_errmsg("duckdb_fdw.allow_unsupported_pg_duckdb_coexistence may not be enabled inside an explicit transaction block");
+		GUC_check_errdetail("The unsupported override is restricted to ordinary session-level SET so it cannot hide inside SET LOCAL or preload transaction state.");
+		GUC_check_errhint("Run LOAD duckdb_fdw and SET duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on as standalone session commands.");
+		return false;
+	}
+
+	return true;
 }
 
 void
@@ -1204,6 +1216,15 @@ _PG_init(void)
 		duckdb_fdw_check_unsupported_pg_duckdb_coexistence,
 		NULL,
 		NULL);
+
+	/*
+	 * Clear any pre-load placeholder or config-sourced value. The override
+	 * must be armed explicitly after duckdb_fdw is loaded into the backend.
+	 */
+	SetConfigOption("duckdb_fdw.allow_unsupported_pg_duckdb_coexistence",
+					"off",
+					PGC_SUSET,
+					PGC_S_SESSION);
 }
 static void
 duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreignrel, List *param_join_conds, List *pathkeys, void *fpextra, double *p_rows, int *p_width, Cost *p_startup_cost, Cost *p_total_cost)

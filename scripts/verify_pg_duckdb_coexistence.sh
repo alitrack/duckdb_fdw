@@ -62,7 +62,7 @@ assert_contains() {
 	fi
 }
 
-echo "[1/4] 验证 peer-loaded backend 默认阻断 duckdb_fdw_version()"
+echo "[1/6] 验证 peer-loaded backend 默认阻断 duckdb_fdw_version()"
 if blocked_version_output="$(psql_run -c "LOAD '${STUB_SO}'; LOAD '${DUCKDB_FDW_SO}'; CREATE FUNCTION pg_temp.duckdb_fdw_version_tmp() RETURNS text AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_version' LANGUAGE C STRICT; SELECT pg_temp.duckdb_fdw_version_tmp();" 2>&1)"; then
 	echo "[FAIL] 预期 duckdb_fdw_version() 在 peer-loaded 场景下失败，但命令成功了"
 	echo "${blocked_version_output}"
@@ -71,12 +71,36 @@ fi
 assert_contains "${blocked_version_output}" "strict coexistence policy rejected the current DuckDB runtime combination"
 assert_contains "${blocked_version_output}" "peer_loaded_need_validation"
 
-echo "[2/4] 验证 override 会告警并放行 duckdb_fdw_version()"
-override_version_output="$(psql_run -c "LOAD '${STUB_SO}'; LOAD '${DUCKDB_FDW_SO}'; SET duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on; CREATE FUNCTION pg_temp.duckdb_fdw_version_tmp() RETURNS text AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_version' LANGUAGE C STRICT; SELECT pg_temp.duckdb_fdw_version_tmp() IS NOT NULL;" 2>&1)"
-assert_contains "${override_version_output}" "duckdb_fdw is running in unsupported pg_duckdb coexistence mode"
-assert_contains "${override_version_output}" "t"
+echo "[2/6] 验证 preload SET 不能预置 unsupported override"
+if preload_override_output="$(psql_run -c "SET duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on; LOAD '${STUB_SO}'; LOAD '${DUCKDB_FDW_SO}'; CREATE FUNCTION pg_temp.duckdb_fdw_version_tmp() RETURNS text AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_version' LANGUAGE C STRICT; SELECT pg_temp.duckdb_fdw_version_tmp();" 2>&1)"; then
+	echo "[FAIL] 预期 preload SET 不能预置 unsupported override，但命令成功了"
+	echo "${preload_override_output}"
+	exit 1
+fi
+assert_contains "${preload_override_output}" "strict coexistence policy rejected the current DuckDB runtime combination"
 
-echo "[3/4] 验证 peer-loaded backend 默认阻断 duckdb_get_connection() 路径"
+echo "[3/6] 验证 SET LOCAL 不能启用 unsupported override"
+if set_local_output="$(psql_run -c "BEGIN; LOAD '${DUCKDB_FDW_SO}'; SET LOCAL duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on;" 2>&1)"; then
+	echo "[FAIL] 预期 SET LOCAL 被拒绝，但命令成功了"
+	echo "${set_local_output}"
+	exit 1
+fi
+assert_contains "${set_local_output}" "may not be enabled inside an explicit transaction block"
+
+echo "[4/6] 验证 override 会告警并放行 duckdb_fdw_version()"
+override_version_output="$(
+	psql_run 2>&1 <<SQL
+LOAD '${STUB_SO}';
+LOAD '${DUCKDB_FDW_SO}';
+SET duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on;
+CREATE FUNCTION pg_temp.duckdb_fdw_version_tmp() RETURNS text AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_version' LANGUAGE C STRICT;
+SELECT 'OVERRIDE_OK' AS sentinel FROM pg_temp.duckdb_fdw_version_tmp();
+SQL
+)"
+assert_contains "${override_version_output}" "duckdb_fdw is running in unsupported pg_duckdb coexistence mode"
+assert_contains "${override_version_output}" "OVERRIDE_OK"
+
+echo "[5/6] 验证 peer-loaded backend 默认阻断 duckdb_get_connection() 路径"
 if blocked_execute_output="$(psql_run -c "BEGIN; LOAD '${STUB_SO}'; LOAD '${DUCKDB_FDW_SO}'; CREATE FUNCTION pg_temp.duckdb_fdw_handler() RETURNS fdw_handler AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_handler' LANGUAGE C STRICT; CREATE FUNCTION pg_temp.duckdb_fdw_validator(text[], oid) RETURNS void AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_validator' LANGUAGE C STRICT; CREATE FUNCTION pg_temp.duckdb_execute(name, text) RETURNS void AS '${DUCKDB_FDW_SO}', 'duckdb_execute' LANGUAGE C STRICT; CREATE FOREIGN DATA WRAPPER duckdb_fdw_tmp HANDLER pg_temp.duckdb_fdw_handler VALIDATOR pg_temp.duckdb_fdw_validator; CREATE SERVER duckdb_guard_srv FOREIGN DATA WRAPPER duckdb_fdw_tmp OPTIONS (database ':memory:'); SELECT pg_temp.duckdb_execute('duckdb_guard_srv', 'SELECT 1'); ROLLBACK;" 2>&1)"; then
 	echo "[FAIL] 预期 duckdb_execute() 在 peer-loaded 场景下失败，但命令成功了"
 	echo "${blocked_execute_output}"
@@ -85,8 +109,8 @@ fi
 assert_contains "${blocked_execute_output}" "strict coexistence policy rejected the current DuckDB runtime combination"
 assert_contains "${blocked_execute_output}" "peer_loaded_need_validation"
 
-echo "[4/4] 验证无 peer 时正常放行"
-normal_execute_output="$(psql_run -c "BEGIN; LOAD '${DUCKDB_FDW_SO}'; CREATE FUNCTION pg_temp.duckdb_fdw_handler() RETURNS fdw_handler AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_handler' LANGUAGE C STRICT; CREATE FUNCTION pg_temp.duckdb_fdw_validator(text[], oid) RETURNS void AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_validator' LANGUAGE C STRICT; CREATE FUNCTION pg_temp.duckdb_execute(name, text) RETURNS void AS '${DUCKDB_FDW_SO}', 'duckdb_execute' LANGUAGE C STRICT; CREATE FOREIGN DATA WRAPPER duckdb_fdw_tmp HANDLER pg_temp.duckdb_fdw_handler VALIDATOR pg_temp.duckdb_fdw_validator; CREATE SERVER duckdb_guard_srv FOREIGN DATA WRAPPER duckdb_fdw_tmp OPTIONS (database ':memory:'); SELECT pg_temp.duckdb_execute('duckdb_guard_srv', 'SELECT 1'); ROLLBACK;" 2>&1)"
-assert_contains "${normal_execute_output}" "ROLLBACK"
+echo "[6/6] 验证无 peer 时正常放行"
+normal_execute_output="$(psql_run -c "BEGIN; LOAD '${DUCKDB_FDW_SO}'; CREATE FUNCTION pg_temp.duckdb_fdw_handler() RETURNS fdw_handler AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_handler' LANGUAGE C STRICT; CREATE FUNCTION pg_temp.duckdb_fdw_validator(text[], oid) RETURNS void AS '${DUCKDB_FDW_SO}', 'duckdb_fdw_validator' LANGUAGE C STRICT; CREATE FUNCTION pg_temp.duckdb_execute(name, text) RETURNS void AS '${DUCKDB_FDW_SO}', 'duckdb_execute' LANGUAGE C STRICT; CREATE FOREIGN DATA WRAPPER duckdb_fdw_tmp HANDLER pg_temp.duckdb_fdw_handler VALIDATOR pg_temp.duckdb_fdw_validator; CREATE SERVER duckdb_guard_srv FOREIGN DATA WRAPPER duckdb_fdw_tmp OPTIONS (database ':memory:'); SELECT 'NO_PEER_OK' AS sentinel FROM pg_temp.duckdb_execute('duckdb_guard_srv', 'SELECT 1'); ROLLBACK;" 2>&1)"
+assert_contains "${normal_execute_output}" "NO_PEER_OK"
 
 echo "[OK] pg_duckdb coexistence runtime guard verification passed"
