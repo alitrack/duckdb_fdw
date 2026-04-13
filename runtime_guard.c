@@ -10,9 +10,8 @@
 
 typedef struct DuckDBRuntimeScanContext
 {
-	const char *self_path;
-	int			duckdb_object_count;
-	int			foreign_duckdb_object_count;
+	DuckDBRuntimeFingerprint fingerprint;
+	int			pg_duckdb_module_count;
 } DuckDBRuntimeScanContext;
 
 static const char *
@@ -39,6 +38,18 @@ duckdb_runtime_is_duckdb_library_path(const char *path)
 	return base != NULL && strncmp(base, "libduckdb", strlen("libduckdb")) == 0;
 }
 
+static bool
+duckdb_runtime_is_pg_duckdb_module_path(const char *path)
+{
+	const char *base;
+
+	if (path == NULL || path[0] == '\0')
+		return false;
+
+	base = duckdb_runtime_basename(path);
+	return base != NULL && strncmp(base, "pg_duckdb", strlen("pg_duckdb")) == 0;
+}
+
 static int
 duckdb_runtime_scan_loaded_object(struct dl_phdr_info *info, size_t size, void *data)
 {
@@ -46,12 +57,21 @@ duckdb_runtime_scan_loaded_object(struct dl_phdr_info *info, size_t size, void *
 
 	(void) size;
 
+	if (duckdb_runtime_is_pg_duckdb_module_path(info->dlpi_name))
+	{
+		context->pg_duckdb_module_count++;
+		context->fingerprint.peer_loaded = true;
+		if (context->fingerprint.peer_module_path == NULL)
+			context->fingerprint.peer_module_path = info->dlpi_name;
+	}
+
 	if (!duckdb_runtime_is_duckdb_library_path(info->dlpi_name))
 		return 0;
 
-	context->duckdb_object_count++;
-	if (strcmp(info->dlpi_name, context->self_path) != 0)
-		context->foreign_duckdb_object_count++;
+	if (context->fingerprint.module_path != NULL &&
+		strcmp(info->dlpi_name, context->fingerprint.module_path) != 0 &&
+		context->fingerprint.peer_runtime_path == NULL)
+		context->fingerprint.peer_runtime_path = info->dlpi_name;
 
 	return 0;
 }
@@ -70,14 +90,16 @@ duckdb_runtime_guard_status_linux(void)
 		return DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN;
 
 	memset(&context, 0, sizeof(context));
-	context.self_path = self_info.dli_fname;
+	context.fingerprint.duckdb_version = duckdb_library_version();
+	context.fingerprint.module_path = self_info.dli_fname;
+	context.fingerprint.duckdb_symbol_path = self_info.dli_fname;
 
 	dl_iterate_phdr(duckdb_runtime_scan_loaded_object, &context);
 
-	if (context.foreign_duckdb_object_count > 0)
-		return DUCKDB_RUNTIME_PEER_LOADED_NEED_VALIDATION;
+	if (context.pg_duckdb_module_count > 0)
+		return DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN;
 
-	if (context.duckdb_object_count == 0)
+	if (context.fingerprint.module_path == NULL)
 		return DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN;
 
 	return DUCKDB_RUNTIME_NO_PEER_LOADED;
@@ -101,22 +123,16 @@ duckdb_runtime_guard_check(void)
 	{
 		case DUCKDB_RUNTIME_NO_PEER_LOADED:
 		case DUCKDB_RUNTIME_COMPATIBLE_PROVEN:
-		case DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN:
 			return;
 
 		case DUCKDB_RUNTIME_PEER_LOADED_NEED_VALIDATION:
+		case DUCKDB_RUNTIME_INCOMPATIBLE:
+		case DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN:
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("DuckDB runtime compatibility is not yet validated"),
-					 errdetail("Detected another DuckDB shared library loaded in this backend."),
-					 errhint("Use a backend without peer-loaded DuckDB libraries until runtime validation is implemented.")));
-			return;
-
-		case DUCKDB_RUNTIME_INCOMPATIBLE:
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("DuckDB runtime is incompatible"),
-					 errdetail("The loaded DuckDB shared library set does not satisfy runtime compatibility requirements.")));
+					 errdetail("The current backend does not satisfy strict DuckDB runtime coexistence requirements."),
+					 errhint("Use a backend without peer-loaded pg_duckdb until runtime validation and override handling are wired.")));
 			return;
 	}
 }
