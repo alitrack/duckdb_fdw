@@ -12,6 +12,7 @@
 #include "utils/rel.h"
 #include "optimizer/cost.h"
 #include "optimizer/pathnode.h"
+#include "runtime_guard.h"
 
 typedef struct duckdb_opt
 {

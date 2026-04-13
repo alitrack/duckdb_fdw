@@ -8,7 +8,7 @@
 #--------------------------------------------------------------------------
 
 MODULE_big = duckdb_fdw
-OBJS = connection.o option.o deparse.o duckdb_fdw.o nanoarrow.o import.o sql_utils.o
+OBJS = connection.o option.o deparse.o duckdb_fdw.o nanoarrow.o import.o sql_utils.o runtime_guard.o
 
 EXTENSION = duckdb_fdw
 DATA = $(wildcard duckdb_fdw--*.sql)
@@ -37,6 +37,7 @@ ifeq ($(detected_OS),Linux)
     PG_CXXFLAGS = -std=c++11
     # 针对现代环境的 ABI 兼容性设置
     PG_CPPFLAGS += -D_GLIBCXX_USE_CXX11_ABI=0
+    SHLIB_LINK += -ldl
 endif
 
 # 自动检测是否需要使用 PGXS
