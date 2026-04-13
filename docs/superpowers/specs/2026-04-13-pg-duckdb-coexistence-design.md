@@ -16,7 +16,7 @@
 
 本次设计采用以下立场：
 
-- 公开支持策略采用严格版“同版本可共存”模型。
+- 长期公开支持策略采用严格版“同版本且可证明兼容时才可共存”模型。
 - 只有在运行期能证明兼容时，`duckdb_fdw` 才允许与 `pg_duckdb` 在同一 backend 中共存。
 - 无法证明安全时，公开支持路径一律拒绝执行。
 - 保留一个显式的 unsupported override，供实验用途放行，但该模式不进入公开支持矩阵。
@@ -45,9 +45,10 @@
 - 未安装 `pg_duckdb`：支持。
 - 已安装 `pg_duckdb`，但当前 backend 未加载：支持。
 - 当前 backend 已加载 `pg_duckdb`：
-  - 只有在能证明兼容时支持。
+  - 首版实现中默认不提供公开支持成功路径。
   - 版本不一致或运行时来源明确冲突时拒绝执行。
   - 无法证明兼容时，按严格策略拒绝执行。
+  - 只有在未来版本引入可验证的协作 fingerprint，且能证明兼容时，才进入公开支持路径。
 
 ### Unsupported Override
 
@@ -56,6 +57,17 @@
 - 默认关闭。
 - 开启后仍然必须输出清晰 `WARNING`。
 - 文档中明确声明该模式不属于官方支持合同。
+
+### 首版支持矩阵
+
+| 场景 | 首版默认行为 | 是否属于公开支持 |
+|---|---|---|
+| 未安装 `pg_duckdb` | 放行 | 是 |
+| 已安装 `pg_duckdb`，但当前 backend 未加载 | 放行 | 是 |
+| 当前 backend 已加载 `pg_duckdb`，且版本/来源明确冲突 | 阻断 | 是，作为受支持的拒绝行为 |
+| 当前 backend 已加载 `pg_duckdb`，版本看似一致但无法证明兼容 | 阻断 | 是，作为受支持的拒绝行为 |
+| 当前 backend 已加载 `pg_duckdb`，用户显式开启 override | 放行并告警 | 否 |
+| 当前 backend 已加载 `pg_duckdb`，且 future cooperative fingerprint 证明兼容 | 预留未来放行路径 | 否，非首版交付 |
 
 ## 兼容性判定模型
 
@@ -73,6 +85,13 @@
   - 安装顺序不决定兼容性
   - 最终判定以后端运行期强校验为准
   - 输出 `duckdb_fdw` 侧可见的 DuckDB 版本信息
+
+安装期候选信号来源：
+
+- 当前数据库中的 `pg_extension`
+- 实例级的 `pg_available_extensions`
+
+这些信号只用于提醒，不用于最终运行时裁决。
 
 ### 运行期状态机
 
@@ -97,6 +116,15 @@
 核心原则：
 
 > 不能证明安全，不等于可以尝试；在公开支持路径里，不能证明安全就视为不安全。
+
+对首版范围的进一步约束：
+
+- 首版的 `CompatibleProven` 仅作为状态机保留态，不要求交付 peer-loaded 下的公开成功路径。
+- 首版一旦判断“当前 backend 已加载 `pg_duckdb`”，默认结果只会落在：
+  - `Incompatible`
+  - `CompatibleUnproven`
+  - 或 unsupported override 放行
+- 进入 `CompatibleProven` 的公开成功路径明确推迟到 future cooperative fingerprint 阶段。
 
 ## 运行时指纹模型
 
@@ -164,6 +192,20 @@
 2. 当前 backend 是否已加载 `pg_duckdb`
 3. `duckdb_fdw` 自身 runtime fingerprint
 4. 无法证明时落入 `CompatibleUnproven`
+
+### 首版 primary detection path
+
+首版明确采用 Linux-first 策略。
+
+运行期判断“当前 backend 是否已加载 `pg_duckdb`”的主路径：
+
+- 使用动态加载器枚举当前进程已加载共享对象
+- 在已加载模块列表中匹配 `pg_duckdb` 扩展模块名或其 canonical path
+- 一旦匹配到 peer 模块，进入强校验
+
+安装期预检不依赖这个机制，只做 catalog 级提示。
+
+如果首版在 Linux 上都无法可靠完成 peer-loaded 检测，则 Phase 1 不进入实现，而应先做设计探针收口该前置条件。
 
 ### 执行挂点
 
@@ -250,6 +292,11 @@
   - 文档化严格共存策略、runtime guard 和 unsupported override
 - 新增诊断型测试或专门集成验证脚本
 
+首版平台范围：
+
+- 仅承诺 Linux-first 规划与实现
+- 其他平台暂不进入首版支持矩阵，只保留接口与文档占位
+
 ## 分阶段落地计划
 
 ### Phase 1：守卫骨架
@@ -263,6 +310,13 @@
   - peer 已加载但无法证明兼容时阻断
   - override 可放行
 
+退出标准：
+
+- 能稳定识别 `NoPeerLoaded`
+- 能识别“当前 backend 已加载 `pg_duckdb`”并进入强校验
+- peer-loaded 且未证实时一致阻断
+- override 可按 session 级放行，并输出 `WARNING`
+
 ### Phase 2：诊断与安装期体验
 
 - 增加预检函数
@@ -270,11 +324,22 @@
 - 完善 README 与错误文案
 - 让用户可以自助理解为何被拦截
 
+退出标准：
+
+- 安装期预检能输出正确提醒但不误阻断
+- 用户可通过诊断接口看到当前判定状态
+- 错误对象能说明阻断原因、已知 fingerprint 和下一步建议
+
 ### Phase 3：协作接口预留
 
 - 定义未来 `pg_duckdb` 可选返回的 fingerprint contract
 - 在 `duckdb_fdw` 中预留协议槽位
 - 不要求首版必须实现双边协作
+
+退出标准：
+
+- future cooperative fingerprint contract 被写清
+- `duckdb_fdw` 的判定模型可无歧义地接入该 contract
 
 ## 验证策略
 
@@ -300,9 +365,8 @@
 
 ## 开放问题
 
-- 首版在 Linux 上如何稳健识别“当前 backend 已加载 `pg_duckdb`”
-- `duckdb_library_version` 等符号来源路径在不同平台上的采集方式是否需要平台分支
-- 将来若引入双边协作接口，SQL 接口、共享内存还是 C symbol 暴露哪种最稳妥
+- `duckdb_library_version` 等符号来源路径在 Linux 上是否足够稳定，需要哪些 fallback 信息
+- `pg_duckdb` 若未来提供协作接口，最稳妥的暴露方式是 SQL、共享内存还是 C symbol
 
 ## 推荐结论
 
