@@ -14,6 +14,7 @@
 #include "optimizer/clauses.h"
 #include "optimizer/restrictinfo.h"
 #include "utils/date.h"
+#include "utils/guc.h"
 #include "utils/timestamp.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
@@ -28,10 +29,15 @@ PG_MODULE_MAGIC;
 #define DUCKDB_EPOCH_DIFF_DAYS 10957
 #define DUCKDB_EPOCH_DIFF_MICROS INT64CONST(946684800000000)
 
+bool duckdb_fdw_allow_unsupported_pg_duckdb_coexistence = false;
+
 static void duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreignrel,
 										   List *param_join_conds, List *pathkeys,
 										   void *fpextra, double *p_rows, int *p_width,
 										   Cost *p_startup_cost, Cost *p_total_cost);
+static bool duckdb_fdw_check_unsupported_pg_duckdb_coexistence(bool *newval,
+															   void **extra,
+															   GucSource source);
 
 static char *
 duckdb_build_relation_reference(const char *table_name)
@@ -1053,7 +1059,12 @@ Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(duckdb_fdw_version);
-Datum duckdb_fdw_version(PG_FUNCTION_ARGS) { PG_RETURN_TEXT_P(cstring_to_text(duckdb_library_version())); }
+Datum
+duckdb_fdw_version(PG_FUNCTION_ARGS)
+{
+	duckdb_runtime_guard_check();
+	PG_RETURN_TEXT_P(cstring_to_text(duckdb_library_version()));
+}
 
 PG_FUNCTION_INFO_V1(duckdb_execute);
 Datum duckdb_execute(PG_FUNCTION_ARGS) {
@@ -1160,10 +1171,40 @@ duckdb_find_em_expr_for_input_target(PlannerInfo *root,
     if (fallbackRel)
         return duckdb_find_em_expr_for_rel(ec, fallbackRel);
 
-    return NULL;
+	return NULL;
 }
 
-void _PG_init(void) {}
+static bool
+duckdb_fdw_check_unsupported_pg_duckdb_coexistence(bool *newval, void **extra, GucSource source)
+{
+	(void) extra;
+
+	if (!*newval)
+		return true;
+
+	if (source == PGC_S_SESSION)
+		return true;
+
+	GUC_check_errdetail("duckdb_fdw.allow_unsupported_pg_duckdb_coexistence may only be enabled with SET in the current session.");
+	GUC_check_errhint("Load duckdb_fdw in the target backend first, then run SET duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on for that session only.");
+	return false;
+}
+
+void
+_PG_init(void)
+{
+	DefineCustomBoolVariable(
+		"duckdb_fdw.allow_unsupported_pg_duckdb_coexistence",
+		"Allow duckdb_fdw to continue in an unsupported backend-local pg_duckdb coexistence state.",
+		"Intended only for session-scoped experiments when strict runtime validation rejects the current backend.",
+		&duckdb_fdw_allow_unsupported_pg_duckdb_coexistence,
+		false,
+		PGC_SUSET,
+		0,
+		duckdb_fdw_check_unsupported_pg_duckdb_coexistence,
+		NULL,
+		NULL);
+}
 static void
 duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreignrel, List *param_join_conds, List *pathkeys, void *fpextra, double *p_rows, int *p_width, Cost *p_startup_cost, Cost *p_total_cost)
 {

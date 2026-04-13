@@ -1,6 +1,8 @@
 #ifndef RUNTIME_GUARD_H
 #define RUNTIME_GUARD_H
 
+#include <stdbool.h>
+
 typedef struct DuckDBRuntimeFingerprint
 {
 	const char *duckdb_version;

@@ -4,6 +4,10 @@
 
 #include <string.h>
 
+extern bool duckdb_fdw_allow_unsupported_pg_duckdb_coexistence;
+
+static bool duckdb_runtime_unsupported_warning_emitted = false;
+
 #ifdef __linux__
 #include <dlfcn.h>
 #include <link.h>
@@ -90,14 +94,13 @@ duckdb_runtime_guard_status_linux(void)
 		return DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN;
 
 	memset(&context, 0, sizeof(context));
-	context.fingerprint.duckdb_version = duckdb_library_version();
 	context.fingerprint.module_path = self_info.dli_fname;
 	context.fingerprint.duckdb_symbol_path = self_info.dli_fname;
 
 	dl_iterate_phdr(duckdb_runtime_scan_loaded_object, &context);
 
 	if (context.pg_duckdb_module_count > 0)
-		return DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN;
+		return DUCKDB_RUNTIME_PEER_LOADED_NEED_VALIDATION;
 
 	if (context.fingerprint.module_path == NULL)
 		return DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN;
@@ -116,23 +119,62 @@ duckdb_runtime_guard_status(void)
 #endif
 }
 
+static void
+duckdb_runtime_guard_error(DuckDBRuntimeCompatibilityStatus status)
+{
+	const char *detail;
+
+	switch (status)
+	{
+		case DUCKDB_RUNTIME_PEER_LOADED_NEED_VALIDATION:
+			detail = "The current backend already loaded pg_duckdb, but duckdb_fdw cannot prove same-backend runtime compatibility.";
+			break;
+		case DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN:
+			detail = "duckdb_fdw could not prove that the active DuckDB runtime is safe for supported execution.";
+			break;
+		case DUCKDB_RUNTIME_INCOMPATIBLE:
+			detail = "duckdb_fdw detected an incompatible DuckDB runtime combination in the current backend.";
+			break;
+		default:
+			detail = "duckdb_fdw rejected the active DuckDB runtime combination.";
+			break;
+	}
+
+	ereport(ERROR,
+			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+			 errmsg("strict coexistence policy rejected the current DuckDB runtime combination"),
+			 errdetail("%s Runtime status: \"%s\".", detail, duckdb_runtime_status_name(status)),
+			 errhint("Use a backend without peer-loaded pg_duckdb, or explicitly set duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on for unsupported experiments.")));
+}
+
 void
 duckdb_runtime_guard_check(void)
 {
-	switch (duckdb_runtime_guard_status())
+	DuckDBRuntimeCompatibilityStatus status = duckdb_runtime_guard_status();
+
+	switch (status)
 	{
 		case DUCKDB_RUNTIME_NO_PEER_LOADED:
 		case DUCKDB_RUNTIME_COMPATIBLE_PROVEN:
 			return;
 
 		case DUCKDB_RUNTIME_PEER_LOADED_NEED_VALIDATION:
-		case DUCKDB_RUNTIME_INCOMPATIBLE:
 		case DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN:
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("DuckDB runtime compatibility is not yet validated"),
-					 errdetail("The current backend does not satisfy strict DuckDB runtime coexistence requirements."),
-					 errhint("Use a backend without peer-loaded pg_duckdb until runtime validation and override handling are wired.")));
+		case DUCKDB_RUNTIME_INCOMPATIBLE:
+			if (duckdb_fdw_allow_unsupported_pg_duckdb_coexistence)
+			{
+				if (!duckdb_runtime_unsupported_warning_emitted)
+				{
+					duckdb_runtime_unsupported_warning_emitted = true;
+					ereport(WARNING,
+							(errmsg("duckdb_fdw is running in unsupported pg_duckdb coexistence mode"),
+							 errdetail("The current backend reported runtime status \"%s\".", duckdb_runtime_status_name(status)),
+							 errhint("Use a backend without peer-loaded pg_duckdb for supported execution.")));
+				}
+				return;
+			}
+
+			duckdb_runtime_guard_error(status);
 			return;
 	}
 }

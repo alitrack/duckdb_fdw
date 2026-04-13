@@ -352,6 +352,8 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 	ConnCacheEntry *entry;
 	ConnCacheKey key;
 
+	duckdb_runtime_guard_check();
+
 	if (ConnectionHash == NULL)
 	{
 		HASHCTL		ctl;
