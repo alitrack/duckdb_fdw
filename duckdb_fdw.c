@@ -1,6 +1,7 @@
 #include "postgres.h"
 #include "duckdb_fdw.h"
 #include "access/xact.h"
+#include "executor/spi.h"
 #include "utils/uuid.h"
 #include "utils/numeric.h"
 #include "access/reloptions.h"
@@ -16,6 +17,8 @@
 #include "optimizer/restrictinfo.h"
 #include "utils/date.h"
 #include "utils/guc.h"
+#include "utils/json.h"
+#include "utils/fmgrprotos.h"
 #include "utils/timestamp.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
@@ -39,6 +42,14 @@ static void duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreig
 static bool duckdb_fdw_check_unsupported_pg_duckdb_coexistence(bool *newval,
 															   void **extra,
 															   GucSource source);
+static void duckdb_jsonb_append_separator(StringInfo buf, bool *first_field);
+static void duckdb_jsonb_append_string_field(StringInfo buf, const char *key,
+											 const char *value, bool *first_field);
+static void duckdb_jsonb_append_bool_field(StringInfo buf, const char *key,
+										   bool value, bool *first_field);
+static void duckdb_fdw_preflight_probe(bool *installed_in_database,
+									   bool *available_in_instance,
+									   bool *catalog_lookup_ok);
 
 static char *
 duckdb_build_relation_reference(const char *table_name)
@@ -1065,6 +1076,176 @@ duckdb_fdw_version(PG_FUNCTION_ARGS)
 {
 	duckdb_runtime_guard_check();
 	PG_RETURN_TEXT_P(cstring_to_text(duckdb_library_version()));
+}
+
+static void
+duckdb_jsonb_append_separator(StringInfo buf, bool *first_field)
+{
+	if (*first_field)
+		*first_field = false;
+	else
+		appendStringInfoChar(buf, ',');
+}
+
+static void
+duckdb_jsonb_append_string_field(StringInfo buf, const char *key, const char *value, bool *first_field)
+{
+	duckdb_jsonb_append_separator(buf, first_field);
+	escape_json(buf, key);
+	appendStringInfoChar(buf, ':');
+
+	if (value == NULL)
+	{
+		appendStringInfoString(buf, "null");
+		return;
+	}
+
+	escape_json(buf, value);
+}
+
+static void
+duckdb_jsonb_append_bool_field(StringInfo buf, const char *key, bool value, bool *first_field)
+{
+	duckdb_jsonb_append_separator(buf, first_field);
+	escape_json(buf, key);
+	appendStringInfoChar(buf, ':');
+	appendStringInfoString(buf, value ? "true" : "false");
+}
+
+PG_FUNCTION_INFO_V1(duckdb_fdw_runtime_compatibility_status);
+Datum
+duckdb_fdw_runtime_compatibility_status(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_TEXT_P(cstring_to_text(
+		duckdb_runtime_status_name(duckdb_runtime_guard_status())));
+}
+
+PG_FUNCTION_INFO_V1(duckdb_fdw_runtime_fingerprint);
+Datum
+duckdb_fdw_runtime_fingerprint(PG_FUNCTION_ARGS)
+{
+	DuckDBRuntimeFingerprint fingerprint;
+	DuckDBRuntimeCompatibilityStatus status;
+	StringInfoData json;
+	bool first_field = true;
+
+	status = duckdb_runtime_guard_status();
+	duckdb_runtime_guard_fingerprint(&fingerprint);
+
+	initStringInfo(&json);
+	appendStringInfoChar(&json, '{');
+	duckdb_jsonb_append_string_field(&json, "status",
+									 duckdb_runtime_status_name(status),
+									 &first_field);
+	duckdb_jsonb_append_string_field(&json, "duckdb_version",
+									 fingerprint.duckdb_version,
+									 &first_field);
+	duckdb_jsonb_append_string_field(&json, "module_path",
+									 fingerprint.module_path,
+									 &first_field);
+	duckdb_jsonb_append_string_field(&json, "duckdb_symbol_path",
+									 fingerprint.duckdb_symbol_path,
+									 &first_field);
+	duckdb_jsonb_append_string_field(&json, "peer_module_path",
+									 fingerprint.peer_module_path,
+									 &first_field);
+	duckdb_jsonb_append_string_field(&json, "peer_runtime_path",
+									 fingerprint.peer_runtime_path,
+									 &first_field);
+	duckdb_jsonb_append_bool_field(&json, "peer_loaded",
+								   fingerprint.peer_loaded,
+								   &first_field);
+	duckdb_jsonb_append_bool_field(&json, "source_unproven",
+								   fingerprint.source_unproven,
+								   &first_field);
+	appendStringInfoChar(&json, '}');
+
+	PG_RETURN_DATUM(DirectFunctionCall1(jsonb_in, CStringGetDatum(json.data)));
+}
+
+static void
+duckdb_fdw_preflight_probe(bool *installed_in_database, bool *available_in_instance,
+						   bool *catalog_lookup_ok)
+{
+	int spi_rc;
+	bool isnull = false;
+	HeapTuple tuple;
+	TupleDesc tupdesc;
+
+	*installed_in_database = false;
+	*available_in_instance = false;
+	*catalog_lookup_ok = false;
+
+	spi_rc = SPI_connect();
+	if (spi_rc != SPI_OK_CONNECT)
+		return;
+
+	spi_rc = SPI_execute(
+		"SELECT "
+		"EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_duckdb') AS installed_in_database, "
+		"EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_duckdb') AS available_in_instance",
+		true,
+		1);
+	if (spi_rc != SPI_OK_SELECT || SPI_processed != 1)
+	{
+		(void) SPI_finish();
+		return;
+	}
+
+	tuple = SPI_tuptable->vals[0];
+	tupdesc = SPI_tuptable->tupdesc;
+	*installed_in_database = DatumGetBool(SPI_getbinval(tuple, tupdesc, 1, &isnull));
+	*available_in_instance = DatumGetBool(SPI_getbinval(tuple, tupdesc, 2, &isnull));
+	*catalog_lookup_ok = true;
+	(void) SPI_finish();
+}
+
+PG_FUNCTION_INFO_V1(duckdb_fdw_preflight);
+Datum
+duckdb_fdw_preflight(PG_FUNCTION_ARGS)
+{
+	bool installed_in_database;
+	bool available_in_instance;
+	bool catalog_lookup_ok;
+	DuckDBRuntimeCompatibilityStatus status;
+	StringInfoData json;
+	bool first_field = true;
+
+	duckdb_fdw_preflight_probe(&installed_in_database,
+							   &available_in_instance,
+							   &catalog_lookup_ok);
+	status = duckdb_runtime_guard_status();
+
+	if (installed_in_database || available_in_instance)
+	{
+		ereport(WARNING,
+				(errmsg("duckdb_fdw detected pg_duckdb during preflight"),
+				 errdetail("Installed in current database: %s. Available in instance: %s.",
+						   installed_in_database ? "yes" : "no",
+						   available_in_instance ? "yes" : "no"),
+				 errhint("duckdb_fdw uses a strict coexistence policy. Install order does not determine runtime compatibility; backend-local runtime validation does.")));
+	}
+
+	initStringInfo(&json);
+	appendStringInfoChar(&json, '{');
+	duckdb_jsonb_append_string_field(&json, "policy",
+									 "strict_runtime_guard",
+									 &first_field);
+	duckdb_jsonb_append_string_field(&json, "runtime_status",
+									 duckdb_runtime_status_name(status),
+									 &first_field);
+	duckdb_jsonb_append_bool_field(&json, "installed_in_database",
+								   installed_in_database,
+								   &first_field);
+	duckdb_jsonb_append_bool_field(&json, "available_in_instance",
+								   available_in_instance,
+								   &first_field);
+	duckdb_jsonb_append_bool_field(&json, "catalog_lookup_ok",
+								   catalog_lookup_ok,
+								   &first_field);
+	appendStringInfoChar(&json, '}');
+
+	PG_RETURN_DATUM(DirectFunctionCall1(jsonb_in, CStringGetDatum(json.data)));
 }
 
 PG_FUNCTION_INFO_V1(duckdb_execute);

@@ -24,6 +24,7 @@ typedef enum DuckDBRuntimeCompatibilityStatus
 } DuckDBRuntimeCompatibilityStatus;
 
 extern DuckDBRuntimeCompatibilityStatus duckdb_runtime_guard_status(void);
+extern void duckdb_runtime_guard_fingerprint(DuckDBRuntimeFingerprint *fingerprint);
 extern void duckdb_runtime_guard_check(void);
 extern const char *duckdb_runtime_status_name(DuckDBRuntimeCompatibilityStatus status);
 

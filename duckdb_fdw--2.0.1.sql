@@ -1,0 +1,47 @@
+/* duckdb_fdw--2.0.1.sql */
+
+CREATE FUNCTION duckdb_fdw_handler()
+RETURNS fdw_handler
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+CREATE FUNCTION duckdb_fdw_validator(text[], oid)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+CREATE FOREIGN DATA WRAPPER duckdb_fdw
+  HANDLER duckdb_fdw_handler
+  VALIDATOR duckdb_fdw_validator;
+
+CREATE FUNCTION duckdb_fdw_version()
+  RETURNS text STRICT
+  AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION duckdb_fdw_runtime_compatibility_status()
+  RETURNS text
+  AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION duckdb_fdw_runtime_fingerprint()
+  RETURNS jsonb
+  AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION duckdb_fdw_preflight()
+  RETURNS jsonb
+  AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION duckdb_execute(server name, statement text)
+RETURNS void STRICT
+AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION duckdb_create_s3_secret(server name, secret_name text, key_id text, secret text, region text DEFAULT NULL)
+RETURNS void
+AS 'MODULE_PATHNAME' LANGUAGE C;
+
+REVOKE EXECUTE ON FUNCTION duckdb_execute(name, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION duckdb_create_s3_secret(name, text, text, text, text) FROM PUBLIC;
+
+COMMENT ON FUNCTION duckdb_execute(name, text)
+IS 'executes an arbitrary SQL statement on DuckDB';
+
+SELECT duckdb_fdw_preflight();

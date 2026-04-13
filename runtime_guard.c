@@ -119,6 +119,47 @@ duckdb_runtime_guard_status(void)
 #endif
 }
 
+void
+duckdb_runtime_guard_fingerprint(DuckDBRuntimeFingerprint *fingerprint)
+{
+	memset(fingerprint, 0, sizeof(*fingerprint));
+
+#ifdef __linux__
+	{
+		Dl_info		self_info;
+		DuckDBRuntimeScanContext context;
+
+		memset(&self_info, 0, sizeof(self_info));
+		if (dladdr((void *) duckdb_library_version, &self_info) == 0)
+		{
+			fingerprint->source_unproven = true;
+			return;
+		}
+
+		fingerprint->module_path = self_info.dli_fname;
+		fingerprint->duckdb_symbol_path = self_info.dli_fname;
+		fingerprint->duckdb_version = duckdb_library_version();
+
+		if (!duckdb_runtime_is_duckdb_library_path(self_info.dli_fname))
+		{
+			fingerprint->source_unproven = true;
+			return;
+		}
+
+		memset(&context, 0, sizeof(context));
+		context.fingerprint = *fingerprint;
+		dl_iterate_phdr(duckdb_runtime_scan_loaded_object, &context);
+
+		*fingerprint = context.fingerprint;
+		fingerprint->duckdb_version = duckdb_library_version();
+		if (fingerprint->module_path == NULL)
+			fingerprint->source_unproven = true;
+	}
+#else
+	fingerprint->source_unproven = true;
+#endif
+}
+
 static void
 duckdb_runtime_guard_error(DuckDBRuntimeCompatibilityStatus status)
 {
