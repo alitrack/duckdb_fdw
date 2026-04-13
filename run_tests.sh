@@ -10,6 +10,8 @@ NC='\033[0m' # No Color
 # 参数解析
 VERBOSE=false
 PROFILE=${PROFILE:-core}
+RUN_PG_DUCKDB_COEXISTENCE_CHECK=${RUN_PG_DUCKDB_COEXISTENCE_CHECK:-0}
+TOTAL_STEPS=3
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -v|--verbose)
@@ -28,6 +30,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "${RUN_PG_DUCKDB_COEXISTENCE_CHECK}" == "1" ]]; then
+    TOTAL_STEPS=4
+fi
+
 # Environment Configuration
 PSQL_BIN=${PSQL_BIN:-psql}
 PGPORT=${PGPORT:-5433}
@@ -45,9 +51,12 @@ else
     echo -e "${YELLOW}模式: 静默执行 (使用 -v 开启详细输出)${NC}"
 fi
 echo -e "${YELLOW}测试档位: ${PROFILE}${NC}"
+if [[ "${RUN_PG_DUCKDB_COEXISTENCE_CHECK}" == "1" ]]; then
+    echo -e "${YELLOW}附加验证: 启用 pg_duckdb 共存守卫检查${NC}"
+fi
 
 # 1. 编译
-echo -e "\n${BLUE}[1/3] 编译并安装插件...${NC}"
+echo -e "\n${BLUE}[1/${TOTAL_STEPS}] 编译并安装插件...${NC}"
 # Use nproc if available, else sysctl (macOS), else 1
 NPROC=1
 if command -v nproc > /dev/null; then
@@ -151,7 +160,7 @@ if [[ "$PROFILE" == "cloud" || "$PROFILE" == "all" ]]; then
 fi
 
 # 3. 运行测试
-echo -e "\n${BLUE}[2/3] 开始执行测试脚本...${NC}"
+echo -e "\n${BLUE}[2/${TOTAL_STEPS}] 开始执行测试脚本...${NC}"
 SUCCESS_COUNT=0
 TOTAL_COUNT=${#TEST_FILES[@]}
 
@@ -193,7 +202,22 @@ for f in "${TEST_FILES[@]}"; do
 done
 
 # 4. 汇总
-echo -e "${BLUE}[3/3] 测试汇总${NC}"
+if [[ "${RUN_PG_DUCKDB_COEXISTENCE_CHECK}" == "1" ]]; then
+    echo -e "\n${BLUE}[3/4] 运行 pg_duckdb 共存守卫验证...${NC}"
+    if ./scripts/verify_pg_duckdb_coexistence.sh; then
+        echo -e "${GREEN}共存守卫验证通过。${NC}"
+    else
+        echo -e "${RED}共存守卫验证失败。${NC}"
+        exit 1
+    fi
+fi
+
+SUMMARY_STEP="[3/${TOTAL_STEPS}]"
+if [[ "${RUN_PG_DUCKDB_COEXISTENCE_CHECK}" == "1" ]]; then
+    SUMMARY_STEP="[4/4]"
+fi
+
+echo -e "${BLUE}${SUMMARY_STEP} 测试汇总${NC}"
 echo "----------------------------------------------------"
 if [ $SUCCESS_COUNT -eq $TOTAL_COUNT ]; then
     echo -e "${GREEN}全部测试通过! ($SUCCESS_COUNT/$TOTAL_COUNT)${NC}"
