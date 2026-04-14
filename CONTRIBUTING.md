@@ -43,15 +43,16 @@ If `pg_config` is missing, local compilation will fail until PostgreSQL developm
 Preferred validation sequence:
 
 ```bash
-openspec validate --specs --strict
 git diff --check
+make USE_PGXS=1
+bash -n run_tests.sh scripts/verify_pg_duckdb_coexistence.sh download_libduckdb.sh
+./scripts/verify_pg_duckdb_coexistence.sh
 ```
 
 If a working PostgreSQL environment is available:
 
 ```bash
-make USE_PGXS=1
-make USE_PGXS=1 installcheck
+PGHOST=/tmp PGPORT=5433 PGUSER=<your-user> make USE_PGXS=1 installcheck
 ```
 
 If Docker image resolution is working, containerized validation is also acceptable. In the current environment, Docker pulls may fail due upstream mirror/network issues, so treat that as an environment blocker rather than immediate code failure.
@@ -65,5 +66,4 @@ If Docker image resolution is working, containerized validation is also acceptab
 ## Change Workflow
 
 - Keep behavior claims aligned with code and regression evidence.
-- Use OpenSpec changes for non-trivial work, then archive them once the slice is complete.
 - Follow the repository Lore commit protocol for every commit.
