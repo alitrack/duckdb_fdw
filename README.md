@@ -77,18 +77,18 @@ FOREIGN DATA WRAPPER duckdb_fdw
 OPTIONS (database '/tmp/duckdb_fdw_demo.db');
 ```
 
-`database ':memory:'` 是连接级临时库。现在 `duckdb_fdw` 会在事务结束时刷新缓存连接，因此如果你要先用 `duckdb_execute(...)` 建表/建视图，再在后续 SQL 语句里通过外表读取它们，默认应使用文件型 DuckDB 数据库；如果确实想用 `:memory:`，请把整段建模和查询包在同一个显式事务里。
+`database ':memory:'` is a connection-scoped temporary database. `duckdb_fdw` now refreshes cached connections at transaction end, so if you create tables or views with `duckdb_execute(...)` and then read them through foreign tables in later SQL statements, use a file-backed DuckDB database by default. If you intentionally want `:memory:`, wrap the entire modeling and query sequence in the same explicit transaction.
 
-### 1.1 `pg_duckdb` 共存策略
+### 1.1 `pg_duckdb` Coexistence Policy
 
-`duckdb_fdw` v2.0.1 起默认启用严格的 runtime coexistence guard：
+`duckdb_fdw` v2.0.1 enables a strict runtime coexistence guard by default:
 
-- Linux-first 检测当前 backend 是否已经加载 `pg_duckdb`
-- 同一 backend 中一旦发现 peer-loaded `pg_duckdb`，默认阻断 DuckDB runtime 执行
-- `duckdb_fdw` 不提供 v1 的公开 peer-loaded 成功路径
-- 只保留一个显式的 unsupported override，且必须在扩展 load 后通过 session 级 `SET` 单独开启
+- Linux-first detection checks whether the current backend has already loaded `pg_duckdb`
+- If peer-loaded `pg_duckdb` is detected in the same backend, DuckDB runtime execution is blocked by default
+- `duckdb_fdw` no longer exposes the v1 public success path for peer-loaded coexistence
+- Only one explicit unsupported override remains, and it must be enabled with a session-level `SET` after the extension is loaded
 
-诊断入口：
+Diagnostics:
 
 ```sql
 SELECT duckdb_fdw_runtime_compatibility_status();
@@ -96,16 +96,16 @@ SELECT duckdb_fdw_runtime_fingerprint();
 SELECT duckdb_fdw_preflight();
 ```
 
-实验性 override：
+Experimental override:
 
 ```sql
 LOAD 'duckdb_fdw';
 SET duckdb_fdw.allow_unsupported_pg_duckdb_coexistence = on;
 ```
 
-这个 override 明确不属于公开支持合同。它默认关闭，不允许 preload placeholder，也不允许通过 `SET LOCAL` 藏在事务里。
+This override is explicitly outside the supported public contract. It is off by default, does not allow preload placeholders, and cannot be hidden inside a transaction with `SET LOCAL`.
 
-Linux-first 共存验证脚本：
+Linux-first coexistence verification script:
 
 ```bash
 ./scripts/verify_pg_duckdb_coexistence.sh
