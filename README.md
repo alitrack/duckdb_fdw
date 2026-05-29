@@ -245,15 +245,15 @@ OPTIONS (quack_host '192.168.1.10:9494');
 CREATE USER MAPPING FOR current_user SERVER quack_srv
 OPTIONS (quack_token 'shared_secret');
 
--- Create foreign tables pointing to the remote Quack server
-CREATE FOREIGN TABLE remote_orders (
-    id INT, amount DECIMAL, order_date DATE
-) SERVER quack_srv OPTIONS (table 'remote.analytics.orders');
+-- One command: import all remote tables
+IMPORT FOREIGN SCHEMA "remote" FROM SERVER quack_srv INTO public;
 
-SELECT * FROM remote_orders WHERE amount > 1000;
+-- Query remote data through standard PG SQL
+SELECT * FROM orders WHERE amount > 1000;
+INSERT INTO orders VALUES (1, 99.9, '2026-05-29');
 ```
 
-This mode solves the classic DuckDB concurrency problem: **multiple PG backends can concurrently read and write the same DuckDB database** through a single Quack server process.
+This mode solves the classic DuckDB concurrency problem: **multiple PG backends can concurrently read and write the same DuckDB database** through a single Quack server process. All PG clients share one `.duckdb` file without lock conflicts.
 
 #### Manual Mode
 
