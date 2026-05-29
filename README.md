@@ -232,6 +232,16 @@ IMPORT FOREIGN SCHEMA "my_db" FROM SERVER md_catalog_srv INTO public;
 
 Quack is DuckDB's native client-server protocol. duckdb_fdw supports it in two modes:
 
+#### Start the Quack Server
+
+Spin up a Quack server from any DuckDB database:
+
+```bash
+duckdb /path/to/shared.db -cmd "LOAD quack; SELECT * FROM quack_serve('quack://0.0.0.0:9494', token := 'shared_secret', allow_other_hostname := true);"
+```
+
+> **Prerequisite**: The PostgreSQL process needs a writable DuckDB home directory (`$HOME/.duckdb/`) to cache extensions. If you see "Can't find the home directory at ''", either set `HOME` in the PG service (`systemctl edit postgresql` → `Environment=HOME=/var/lib/postgresql`) or use Manual Mode with a pre-created database file.
+
 #### Native Proxy Mode (Recommended)
 
 Set `quack_host` in the server options. duckdb_fdw automatically opens a local in-memory DuckDB, loads the Quack extension, creates a Quack SECRET, and ATTACHes the remote server. All foreign tables are created as `remote.schema.table` — queries are transparently routed to the Quack server.
@@ -246,7 +256,7 @@ CREATE USER MAPPING FOR current_user SERVER quack_srv
 OPTIONS (quack_token 'shared_secret');
 
 -- One command: import all remote tables
-IMPORT FOREIGN SCHEMA "remote" FROM SERVER quack_srv INTO public;
+IMPORT FOREIGN SCHEMA main FROM SERVER quack_srv INTO public;
 
 -- Query remote data through standard PG SQL
 SELECT * FROM orders WHERE amount > 1000;
@@ -257,14 +267,15 @@ This mode solves the classic DuckDB concurrency problem: **multiple PG backends 
 
 #### Manual Mode
 
-For more control, use `duckdb_execute` to manage the Quack connection yourself:
+For more control, use `duckdb_execute` to manage the Quack connection yourself. This mode also works around the home directory issue on machines where the PG process can't set `$HOME`:
 
 ```sql
 CREATE SERVER quack_srv FOREIGN DATA WRAPPER duckdb_fdw
 OPTIONS (database '/tmp/quack_local.db', extensions 'quack');
 
 SELECT duckdb_execute('quack_srv',
-  $$CREATE SECRET (TYPE quack, TOKEN 'your_token');
+  $$LOAD quack;
+    CREATE SECRET (TYPE quack, TOKEN 'your_token');
     ATTACH 'quack:remote-host:9494' AS remote_db;$$);
 ```
 
@@ -308,6 +319,38 @@ Result messages containing credentials (SECRET, KEY_ID, ACCESS_KEY, TOKEN, mothe
 ## 🤝 Contributing
 
 Contributions are welcome. Current high-priority areas are production hardening, deterministic regression coverage, and eventually a true Arrow C Data read path.
+
+## 🔧 Troubleshooting
+
+### "Can't find the home directory at ''" (Quack mode)
+
+DuckDB 1.5+ needs a writable `$HOME/.duckdb/` to cache extensions. The PG backend runs as the `postgres` user, which may not have `$HOME` set.
+
+**Fix A**: Set HOME in the PG service:
+
+```bash
+sudo systemctl edit postgresql
+# Add: [Service] Environment=HOME=/var/lib/postgresql
+sudo systemctl restart postgresql
+```
+
+**Fix B**: Use Manual Mode with a pre-created DB file (bypasses in-memory DuckDB):
+
+```sql
+CREATE SERVER quack_srv FOREIGN DATA WRAPPER duckdb_fdw
+OPTIONS (database '/tmp/quack_fdw.db', extensions 'quack');
+```
+
+### Compilation error: "implicit declaration of function 'GetUserId'" (PG 17)
+
+PostgreSQL 17 requires explicit `#include "miscadmin.h"` for `GetUserId()`. This is fixed in the main branch — make sure you're on the latest commit.
+
+### Downloading libduckdb times out (GitHub behind proxy)
+
+```bash
+export HTTP_PROXY=http://your-proxy:port HTTPS_PROXY=http://your-proxy:port
+./download_libduckdb.sh
+```
 
 ## 📄 License
 

@@ -1,5 +1,6 @@
 #include "postgres.h"
 #include "duckdb_fdw.h"
+#include "miscadmin.h"
 #include "access/xact.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
