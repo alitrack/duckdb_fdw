@@ -107,7 +107,9 @@ duckdb_fdw_redact_secret_text(const char *input)
 	if (contains_keyword_ci(input, "SECRET") ||
 		contains_keyword_ci(input, "KEY_ID") ||
 		contains_keyword_ci(input, "ACCESS_KEY") ||
-		contains_keyword_ci(input, "s3_secret_access_key"))
+		contains_keyword_ci(input, "s3_secret_access_key") ||
+		contains_keyword_ci(input, "TOKEN") ||
+		contains_keyword_ci(input, "motherduck"))
 	{
 		return pstrdup("DuckDB operation failed (details redacted for security)");
 	}

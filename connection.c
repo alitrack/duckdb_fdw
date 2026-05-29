@@ -54,12 +54,8 @@ duckdb_connection_xact_callback(XactEvent event, void *arg)
 	{
 		case XACT_EVENT_COMMIT:
 		case XACT_EVENT_ABORT:
-		case XACT_EVENT_PRE_COMMIT:
-		case XACT_EVENT_PREPARE:
-		case XACT_EVENT_PRE_PREPARE:
 		case XACT_EVENT_PARALLEL_COMMIT:
 		case XACT_EVENT_PARALLEL_ABORT:
-		case XACT_EVENT_PARALLEL_PRE_COMMIT:
 			duckdb_cleanup_connection_cache();
 			break;
 		default:
@@ -135,6 +131,7 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
     bool s3_use_ssl = true;
     char *extensions = NULL;
     char *attach_catalogs = NULL;
+    char *motherduck_token = NULL;
     ListCell *lc;
     Oid userid = GetUserId();
 
@@ -152,6 +149,8 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
                     s3_access_key = defGetString(def);
                 else if (strcmp(def->defname, "s3_secret_access_key") == 0)
                     s3_secret_key = defGetString(def);
+                else if (strcmp(def->defname, "motherduck_token") == 0)
+                    motherduck_token = defGetString(def);
             }
         }
     }
@@ -167,12 +166,15 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         else if (strcmp(def->defname, "s3_use_ssl") == 0) s3_use_ssl = defGetBoolean(def);
         else if (strcmp(def->defname, "extensions") == 0) extensions = defGetString(def);
         else if (strcmp(def->defname, "attach_catalogs") == 0) attach_catalogs = defGetString(def);
+        else if (strcmp(def->defname, "motherduck_token") == 0 && motherduck_token == NULL)
+            motherduck_token = defGetString(def);
     }
 
-	    /* 2. Intelligent Extension Autoloading */
-	    {
+    /* 2. Intelligent Extension Autoloading */
+    {
         bool need_httpfs = (s3_access_key != NULL);
         bool need_iceberg = false;
+        bool need_motherduck = (motherduck_token != NULL);
 
         if (attach_catalogs)
         {
@@ -187,6 +189,7 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         /* Use ERROR level to ensure user sees why extension loading fails */
         if (need_httpfs) duckdb_do_sql_command(conn, "INSTALL 'httpfs'; LOAD 'httpfs';", ERROR);
         if (need_iceberg) duckdb_do_sql_command(conn, "INSTALL 'iceberg'; LOAD 'iceberg';", ERROR);
+        if (need_motherduck) duckdb_do_sql_command(conn, "INSTALL 'motherduck'; LOAD 'motherduck';", ERROR);
 
 	        /* Also load any manually specified extensions */
 		        if (extensions)
@@ -239,7 +242,20 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 			pfree(sql.data);
 	    }
 
-    /* 4. Catalogs (Auto ATTACH) */
+    /* 4. MotherDuck Integration */
+    if (motherduck_token)
+    {
+        StringInfoData sql;
+        char *token_lit = duckdb_fdw_quote_literal(motherduck_token);
+        initStringInfo(&sql);
+        appendStringInfo(&sql, "CREATE OR REPLACE SECRET pg_duck_md "
+                         "( TYPE MOTHERDUCK, TOKEN %s );", token_lit);
+        duckdb_do_sql_command(conn, sql.data, ERROR);
+        pfree(token_lit);
+        pfree(sql.data);
+    }
+
+    /* 5. Catalogs (Auto ATTACH) */
 	    if (attach_catalogs)
 	    {
 	        char *at_copy = pstrdup(attach_catalogs);

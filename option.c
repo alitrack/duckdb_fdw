@@ -48,6 +48,10 @@ static struct DuckDBFdwOption valid_options[] =
      * with SELECT on pg_foreign_server, which is public by default.) */
     {"s3_access_key_id", UserMappingRelationId},
     {"s3_secret_access_key", UserMappingRelationId},
+
+    /* MotherDuck token */
+    {"motherduck_token", ForeignServerRelationId},
+    {"motherduck_token", UserMappingRelationId},
     
     /* Catalogs */
     {"attach_catalogs", ForeignServerRelationId}, /* format: 'name=uri;type iceberg' */

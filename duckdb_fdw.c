@@ -498,8 +498,8 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
                                    ObjectIdGetDatum(fpinfo->server->serverid));
     if (HeapTupleIsValid(tp))
     {
-        fpinfo->user = GetUserMapping(GetUserId(), fpinfo->server->serverid);
         ReleaseSysCache(tp);
+        fpinfo->user = GetUserMapping(GetUserId(), fpinfo->server->serverid);
     }
 
     fpinfo->pushdown_safe = true;
@@ -908,6 +908,18 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
     }
 }
 
+static int
+duckdbIsForeignRelUpdatable(Relation rel)
+{
+	/*
+	 * duckdb_fdw supports INSERT via the Appender API and the legacy
+	 * SQL fallback path. UPDATE and DELETE are not supported — the
+	 * planner will skip FDW modify paths for those operations rather
+	 * than failing at execution time.
+	 */
+	return (1 << CMD_INSERT);
+}
+
 static void
 duckdbAddForeignUpdateTargets(PlannerInfo *root,
                               Index rtindex,
@@ -1047,8 +1059,12 @@ duckdbEndForeignModify(EState *executor, ResultRelInfo *resultRelInfo)
 		return;
 	if (festate->use_appender && festate->appender)
 	{
-		duckdb_appender_close(festate->appender);
+		duckdb_state close_state = duckdb_appender_close(festate->appender);
 		duckdb_appender_destroy(&festate->appender);
+		if (close_state == DuckDBError)
+			ereport(WARNING,
+					(errmsg("duckdb_fdw: appender close reported an error"),
+					 errdetail("Some buffered rows may not have been flushed to DuckDB.")));
 	}
 }
 
@@ -1078,6 +1094,7 @@ Datum duckdb_fdw_handler(PG_FUNCTION_ARGS)
     fdwroutine->ExplainForeignScan = duckdbExplainForeignScan;
 
     /* Write Support */
+    fdwroutine->IsForeignRelUpdatable = duckdbIsForeignRelUpdatable;
     fdwroutine->AddForeignUpdateTargets = duckdbAddForeignUpdateTargets;
 	    fdwroutine->PlanForeignModify = duckdbPlanForeignModify;
 	    fdwroutine->BeginForeignModify = duckdbBeginForeignModify;
