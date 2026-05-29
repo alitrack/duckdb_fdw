@@ -430,13 +430,40 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 	if (!found || entry->conn == NULL)
 	{
         const char *dbpath = NULL;
+        const char *quack_host = NULL;
+        const char *quack_token = NULL;
+        Oid userid = GetUserId();
         ListCell *lc;
+
+        /* Check user mapping for quack_token first (secure path) */
+        {
+            UserMapping *um = GetUserMapping(userid, server->serverid);
+            if (um && um->options)
+            {
+                ListCell *umlc;
+                foreach(umlc, um->options)
+                {
+                    DefElem *def = (DefElem *) lfirst(umlc);
+                    if (strcmp(def->defname, "quack_token") == 0)
+                        quack_token = defGetString(def);
+                }
+            }
+        }
+
         foreach(lc, server->options)
         {
             DefElem *def = (DefElem *) lfirst(lc);
             if (strcmp(def->defname, "database") == 0)
                 dbpath = defGetString(def);
+            else if (strcmp(def->defname, "quack_host") == 0)
+                quack_host = defGetString(def);
+            else if (strcmp(def->defname, "quack_token") == 0 && quack_token == NULL)
+                quack_token = defGetString(def);
         }
+
+        /* Quack mode: use in-memory DuckDB if no database specified */
+        if (quack_host && !dbpath)
+            dbpath = ":memory:";
 
         if (duckdb_open(dbpath, &entry->db) == DuckDBError)
             elog(ERROR, "failed to open DuckDB");
@@ -444,6 +471,31 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 	            elog(ERROR, "failed to connect to DuckDB");
 
 	        duckdb_setup_secrets_and_extensions(entry->conn, server);
+
+        /* Quack proxy mode: load Quack extension and ATTACH remote */
+        if (quack_host)
+        {
+            char *host_lit;
+            char *attach_sql;
+
+            duckdb_do_sql_command(entry->conn,
+                "INSTALL quack FROM core_nightly; LOAD quack;", ERROR);
+
+            if (quack_token)
+            {
+                char *token_lit = duckdb_fdw_quote_literal(quack_token);
+                char *secret_sql = psprintf(
+                    "CREATE SECRET (TYPE quack, TOKEN %s);", token_lit);
+                duckdb_do_sql_command(entry->conn, secret_sql, ERROR);
+                pfree(token_lit);
+                pfree(secret_sql);
+            }
+
+            host_lit = duckdb_fdw_quote_literal(quack_host);
+            attach_sql = psprintf("ATTACH 'quack:%s' AS remote;", quack_host);
+            duckdb_do_sql_command(entry->conn, attach_sql, ERROR);
+            pfree(attach_sql);
+        }
 	}
 	return entry->conn;
 }

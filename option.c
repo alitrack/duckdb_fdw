@@ -56,6 +56,11 @@ static struct DuckDBFdwOption valid_options[] =
     /* Catalogs */
     {"attach_catalogs", ForeignServerRelationId}, /* format: 'name=uri;type iceberg' */
 
+    /* Quack client-server mode */
+    {"quack_host", ForeignServerRelationId}, /* host:port of the Quack server */
+    {"quack_token", UserMappingRelationId},  /* Quack auth token (secure: user mapping) */
+    {"quack_token", ForeignServerRelationId}, /* fallback: server option */
+
     /* Extensions */
     {"extensions", ForeignServerRelationId}, /* e.g., 'httpfs,spatial,iceberg' */
 
