@@ -69,6 +69,24 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
     duckdb_result res;
     StringInfoData query;
     bool is_file = false;
+    bool is_quack = false;
+    const char *quack_prefix = "";
+
+    /* Detect Quack proxy mode: if server has quack_host, tables live in
+     * the ATTACHed 'remote' database and catalog queries need the prefix. */
+    {
+        ListCell *lc;
+        foreach(lc, server->options)
+        {
+            DefElem *def = (DefElem *) lfirst(lc);
+            if (strcmp(def->defname, "quack_host") == 0)
+            {
+                is_quack = true;
+                quack_prefix = "remote.";
+                break;
+            }
+        }
+    }
 
     if (strstr(stmt->remote_schema, ".parquet") || strstr(stmt->remote_schema, "/"))
         is_file = true;
@@ -137,9 +155,9 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 			remote_schema_lit = duckdb_fdw_quote_literal(stmt->remote_schema);
 	        appendStringInfo(&query,
 	            "SELECT database_name, schema_name, table_name "
-	            "FROM duckdb_tables() "
+	            "FROM %sduckdb_tables() "
 	            "WHERE database_name = %s OR schema_name = %s",
-	            remote_schema_lit, remote_schema_lit);
+	            quack_prefix, remote_schema_lit, remote_schema_lit);
 			pfree(remote_schema_lit);
 
         if (duckdb_query(conn, query.data, &tables_res) == DuckDBError)
@@ -161,7 +179,8 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
             appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (",
                              quote_identifier(stmt->local_schema), quote_identifier(tname));
 
-            appendStringInfo(&desc_query, "DESCRIBE SELECT * FROM %s.%s.%s",
+            appendStringInfo(&desc_query, "DESCRIBE SELECT * FROM %s%s.%s.%s",
+                             quack_prefix,
                              quote_identifier(dbname), quote_identifier(schname), quote_identifier(tname));
 
 	            if (duckdb_query(conn, desc_query.data, &col_res) != DuckDBError)
