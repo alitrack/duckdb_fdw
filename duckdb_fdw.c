@@ -168,8 +168,13 @@ duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, Foreig
 		if (duckdb_prepare(festate->conn, festate->query, &festate->prepared_stmt) == DuckDBError)
 		{
 			const char *err = festate->prepared_stmt ? duckdb_prepare_error(festate->prepared_stmt) : "prepare error";
-			elog(ERROR, "duckdb_fdw: prepare failed: %s", err ? err : "prepare error");
+			char *err_msg = pstrdup(err ? err : "prepare error");
+			if (festate->prepared_stmt)
+				duckdb_destroy_prepare(&festate->prepared_stmt);
+			elog(ERROR, "duckdb_fdw: prepare failed: %s", err_msg);
 		}
+
+		festate->use_prepared_stmt = true;
 
 		forboth(lc_state, festate->param_expr_states, lc_expr, festate->param_exprs)
 		{
@@ -187,7 +192,6 @@ duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, Foreig
 
 		if (duckdb_execute_prepared(festate->prepared_stmt, &festate->res) == DuckDBError)
 			elog(ERROR, "duckdb_fdw: execute prepared failed");
-		festate->use_prepared_stmt = true;
 	}
 	else
 	{
@@ -840,8 +844,10 @@ duckdbEndForeignScan(ForeignScanState *node)
 static void
 duckdbReScanForeignScan(ForeignScanState *node)
 {
-    duckdbEndForeignScan(node);
-    duckdbBeginForeignScan(node, 0);
+	DuckDBFdwExecState *oldstate = (DuckDBFdwExecState *)node->fdw_state;
+	duckdbEndForeignScan(node);
+	duckdbBeginForeignScan(node, 0);
+	pfree(oldstate);
 }
 
 static void

@@ -68,6 +68,25 @@ duckdb_connection_xact_callback(XactEvent event, void *arg)
 }
 
 static void
+duckdb_connection_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
+									SubTransactionId parentSubid, void *arg)
+{
+	(void) arg;
+	(void) mySubid;
+	(void) parentSubid;
+
+	/*
+	 * On subtransaction abort, clean up cached connections so that any
+	 * in-progress DuckDB state from the aborted subtransaction is discarded.
+	 * This is conservative (clears all connections, not just those created
+	 * in the subtransaction) but avoids leaking DuckDB internal state into
+	 * the parent transaction.
+	 */
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		duckdb_cleanup_connection_cache();
+}
+
+static void
 append_endpoint_clause(StringInfo sql, const char *s3_endpoint, const char *s3_region)
 {
 	if (s3_endpoint)
@@ -366,6 +385,7 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 	if (!ConnectionXactCallbackRegistered)
 	{
 		RegisterXactCallback(duckdb_connection_xact_callback, NULL);
+		RegisterSubXactCallback(duckdb_connection_subxact_callback, NULL);
 		ConnectionXactCallbackRegistered = true;
 	}
 
