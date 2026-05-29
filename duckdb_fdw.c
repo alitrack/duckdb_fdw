@@ -822,6 +822,13 @@ duckdbIterateForeignScan(ForeignScanState *node)
 	    }
 
 	    ExecStoreVirtualTuple(slot);
+#if PG_VERSION_NUM >= 170000
+	    /*
+	     * PG 17+ refactored TupleTableSlot internals. Explicitly set
+	     * tts_nvalid so the slot system knows all values are populated.
+	     */
+	    slot->tts_nvalid = slot->tts_tupleDescriptor->natts;
+#endif
 	    festate->current_chunk_row_idx++;
 		festate->global_row_idx++;
 	    return slot;

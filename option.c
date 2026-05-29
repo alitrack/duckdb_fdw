@@ -42,6 +42,12 @@ static struct DuckDBFdwOption valid_options[] =
     {"s3_endpoint", ForeignServerRelationId},
     {"s3_endpoint_type", ForeignServerRelationId}, /* e.g. 's3_tables' */
     {"s3_use_ssl", ForeignServerRelationId},
+
+    /* S3 credentials can also be set per-user via USER MAPPING (preferred
+     * for security — pg_foreign_server options are visible to all users
+     * with SELECT on pg_foreign_server, which is public by default.) */
+    {"s3_access_key_id", UserMappingRelationId},
+    {"s3_secret_access_key", UserMappingRelationId},
     
     /* Catalogs */
     {"attach_catalogs", ForeignServerRelationId}, /* format: 'name=uri;type iceberg' */

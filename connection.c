@@ -136,14 +136,33 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
     char *extensions = NULL;
     char *attach_catalogs = NULL;
     ListCell *lc;
+    Oid userid = GetUserId();
 
-    /* 1. Parse Options and Detect Requirements */
+    /* 0. Check USER MAPPING first (preferred, secure path).
+     * S3 credentials in user_mapping are only visible to the mapped user
+     * and superusers, unlike pg_foreign_server which is public-readable. */
+    {
+        UserMapping *um = GetUserMapping(userid, server->serverid);
+        if (um && um->options)
+        {
+            foreach(lc, um->options)
+            {
+                DefElem *def = (DefElem *) lfirst(lc);
+                if (strcmp(def->defname, "s3_access_key_id") == 0)
+                    s3_access_key = defGetString(def);
+                else if (strcmp(def->defname, "s3_secret_access_key") == 0)
+                    s3_secret_key = defGetString(def);
+            }
+        }
+    }
+
+    /* 1. Parse Server Options (fallback if user_mapping didn't set creds) */
     foreach(lc, server->options)
     {
         DefElem *def = (DefElem *) lfirst(lc);
         if (strcmp(def->defname, "s3_region") == 0) s3_region = defGetString(def);
-        else if (strcmp(def->defname, "s3_access_key_id") == 0) s3_access_key = defGetString(def);
-        else if (strcmp(def->defname, "s3_secret_access_key") == 0) s3_secret_key = defGetString(def);
+        else if (strcmp(def->defname, "s3_access_key_id") == 0 && s3_access_key == NULL) s3_access_key = defGetString(def);
+        else if (strcmp(def->defname, "s3_secret_access_key") == 0 && s3_secret_key == NULL) s3_secret_key = defGetString(def);
         else if (strcmp(def->defname, "s3_endpoint") == 0) s3_endpoint = defGetString(def);
         else if (strcmp(def->defname, "s3_use_ssl") == 0) s3_use_ssl = defGetBoolean(def);
         else if (strcmp(def->defname, "extensions") == 0) extensions = defGetString(def);

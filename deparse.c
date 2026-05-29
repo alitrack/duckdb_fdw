@@ -234,10 +234,15 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 					appendStringInfoChar(buf, '.');
 				first = false;
 
-				if (duckdb_fdw_is_valid_identifier(trimmed))
-					appendStringInfo(buf, "%s", duckdb_quote_identifier(trimmed, QUOTE));
-				else
-					appendStringInfo(buf, "%s", trimmed);
+			if (duckdb_fdw_is_valid_identifier(trimmed))
+				appendStringInfo(buf, "%s", duckdb_quote_identifier(trimmed, QUOTE));
+			else if (duckdb_fdw_is_safe_sql_fragment(trimmed))
+				appendStringInfo(buf, "%s", duckdb_quote_identifier(trimmed, QUOTE));
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+						 errmsg("relation name contains unsafe characters: \"%s\"",
+								trimmed)));
 
 					token = duckdb_fdw_next_token(NULL, ".", &saveptr);
 				}
