@@ -4,13 +4,11 @@
 [![Postgres](https://img.shields.io/badge/PostgreSQL-13--18-blue.svg)](https://www.postgresql.org/)
 [![DuckDB](https://img.shields.io/badge/DuckDB-1.x-orange.svg)](https://duckdb.org/)
 
-**`duckdb_fdw`** v2.0+ is a high-performance PostgreSQL extension that bridges PostgreSQL's ecosystem with DuckDB's vectorized analytical power. Built natively on the **DuckDB C API**, it supports modern Lakehouse workflows including Parquet, Iceberg, and S3 Tables.
+**`duckdb_fdw`** v2.0+ is a high-performance PostgreSQL extension that bridges PostgreSQL's ecosystem with DuckDB's vectorized analytical power. Built natively on the **DuckDB C API**, it supports modern Lakehouse workflows including Parquet, Iceberg, S3 Tables, DuckLake, MotherDuck, and the Quack client-server protocol.
 
 ---
 
 ## 🚀 Capability Status (v2.0.1)
-
-The table below reflects the **current implementation status** and required runtime prerequisites.
 
 | Capability | Status | Validation Evidence | Prerequisites |
 | :--- | :--- | :--- | :--- |
@@ -20,6 +18,8 @@ The table below reflects the **current implementation status** and required runt
 | Appender insert path | Implemented | `duckdbBeginForeignModify`, `duckdbExecForeignInsert` | Writable foreign table |
 | Batch insert hooks (PG14+) | Implemented | `ExecForeignBatchInsert`, `GetForeignModifyBatchSize` | PostgreSQL 14+ |
 | Secret helper (`duckdb_create_s3_secret`) | Implemented | SQL function + `duckdb_fdw.c` | S3 credentials |
+| MotherDuck integration | Implemented | `motherduck_token` option + auto-extension loading | MotherDuck account |
+| Quack client-server protocol | Implemented | via `extensions 'quack'` + `duckdb_execute` | DuckDB with Quack extension |
 | Runtime coexistence guard for `pg_duckdb` | Implemented (Linux-first) | `runtime_guard.c`, `scripts/verify_pg_duckdb_coexistence.sh` | Same-backend peer detection |
 | Iceberg/S3 examples | Partial | `examples/07-13` | Network, optional credentials |
 | Full Arrow C Data scan path | Planned | no `duckdb_query_arrow` call in active scan path; tracked as future work | future release |
@@ -79,7 +79,7 @@ OPTIONS (database '/tmp/duckdb_fdw_demo.db');
 
 `database ':memory:'` is a connection-scoped temporary database. `duckdb_fdw` now refreshes cached connections at transaction end, so if you create tables or views with `duckdb_execute(...)` and then read them through foreign tables in later SQL statements, use a file-backed DuckDB database by default. If you intentionally want `:memory:`, wrap the entire modeling and query sequence in the same explicit transaction.
 
-### 1.1 `pg_duckdb` Coexistence Policy
+### 2. `pg_duckdb` Coexistence Policy
 
 `duckdb_fdw` v2.0.1 enables a strict runtime coexistence guard by default:
 
@@ -111,35 +111,75 @@ Linux-first coexistence verification script:
 ./scripts/verify_pg_duckdb_coexistence.sh
 ```
 
-### 2. Configure Cloud Credentials (S3)
+### 3. Configure Cloud Credentials
+
+#### S3 (Recommended: USER MAPPING)
+
+For security, prefer storing S3 credentials in **USER MAPPING** rather than server options. `pg_foreign_server` options are public-readable by default; `USER MAPPING` credentials are only visible to the mapped user and superusers.
+
 ```sql
--- Easily create secrets without complex SQL concatenation
-SELECT duckdb_create_s3_secret('duckdb_srv', 'my_s3_key', 'YOUR_KEY', 'YOUR_SECRET', 'us-east-1');
+CREATE SERVER s3_srv FOREIGN DATA WRAPPER duckdb_fdw 
+OPTIONS (database '/tmp/s3_cache.db', s3_region 'us-east-1');
+
+-- Secure: credentials in USER MAPPING (not visible to other users)
+CREATE USER MAPPING FOR current_user SERVER s3_srv
+OPTIONS (
+    s3_access_key_id 'YOUR_KEY',
+    s3_secret_access_key 'YOUR_SECRET'
+);
 ```
 
-### 3. Query Data Lake (Parquet/Iceberg)
+#### S3 (Legacy: Server Options)
+
+```sql
+CREATE SERVER s3_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
+    database '/tmp/s3_cache.db',
+    s3_region 'us-east-1',
+    s3_access_key_id 'YOUR_KEY',
+    s3_secret_access_key 'YOUR_SECRET'
+);
+```
+
+#### Secret Helper Function
+
+```sql
+SELECT duckdb_create_s3_secret('s3_srv', 'my_s3_key', 'YOUR_KEY', 'YOUR_SECRET', 'us-east-1');
+```
+
+### 4. Query Data Lake (Parquet / Iceberg / DuckLake)
+
 ```sql
 -- Direct scan of S3 Parquet
 CREATE FOREIGN TABLE s3_data (
     id INT,
     price DECIMAL
-) SERVER duckdb_srv 
+) SERVER s3_srv 
 OPTIONS (table 's3://my-bucket/data.parquet');
 
 -- Import whole DuckLake or Iceberg schema
 CREATE SCHEMA remote_tpch;
-IMPORT FOREIGN SCHEMA "tpch" FROM SERVER duckdb_srv INTO remote_tpch;
+IMPORT FOREIGN SCHEMA "tpch" FROM SERVER s3_srv INTO remote_tpch;
 ```
 
-### 4. High-Speed S3 Tables (Lakehouse)
+**DuckLake** catalogs (`type=ducklake`) are auto-detected. Just point `attach_catalogs` at a DuckLake URL and duckdb_fdw automatically loads the Iceberg extension:
+
+```sql
+CREATE SERVER ducklake_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
+    database '/tmp/dl.db',
+    attach_catalogs 'tpch=https://blobs.duckdb.org/datalake/tpch-sf3.ducklake;type ducklake'
+);
+
+IMPORT FOREIGN SCHEMA "tpch" FROM SERVER ducklake_srv INTO public;
+```
+
+### 5. High-Speed S3 Tables (Lakehouse)
+
 `duckdb_fdw` v2.0+ handles **AWS S3 Tables** with zero configuration. It automatically detects `arn:aws:s3tables` URIs and injects the required `sigv4` authorization.
 
 ```sql
 CREATE SERVER lakehouse_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
     database '/tmp/duckdb_fdw_lakehouse.db',
     s3_region 'us-east-1',
-    s3_access_key_id 'YOUR_KEY',
-    s3_secret_access_key 'YOUR_SECRET',
     -- Attach S3 Table catalog (endpoint and auth are auto-injected)
     attach_catalogs 'my_res=arn:aws:s3tables:us-east-1:12345678:bucket/my-table;type iceberg'
 );
@@ -151,6 +191,78 @@ IMPORT FOREIGN SCHEMA "my_res" FROM SERVER lakehouse_srv INTO public;
 SELECT * FROM part WHERE p_partkey = 1;
 ```
 
+### 6. MotherDuck
+
+> Requires: DuckDB >= 1.1 with `motherduck` extension available.
+
+Set your MotherDuck token in **USER MAPPING** (recommended for security) or server options. The extension is auto-installed and a MotherDuck SECRET is created automatically on connection.
+
+```sql
+CREATE SERVER md_srv FOREIGN DATA WRAPPER duckdb_fdw
+OPTIONS (database '/tmp/md_local.db');
+
+CREATE USER MAPPING FOR current_user SERVER md_srv
+OPTIONS (motherduck_token 'your_motherduck_token');
+
+-- Attach a MotherDuck database
+SELECT duckdb_execute('md_srv', $$ATTACH 'md:my_db' AS my_md;$$);
+
+-- Map MotherDuck tables as PG foreign tables
+IMPORT FOREIGN SCHEMA "my_md" FROM SERVER md_srv INTO public;
+
+-- Or query MotherDuck directly via duckdb_execute
+SELECT duckdb_execute('md_srv', 'CREATE TABLE my_md.my_table AS SELECT 42 AS answer');
+```
+
+You can also reference MotherDuck databases via `attach_catalogs`:
+
+```sql
+CREATE SERVER md_catalog_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
+    database '/tmp/md_catalog.db',
+    motherduck_token 'your_token',
+    attach_catalogs 'my_db=md:my_db'
+);
+
+IMPORT FOREIGN SCHEMA "my_db" FROM SERVER md_catalog_srv INTO public;
+```
+
+### 7. Quack (Client-Server Protocol)
+
+> Requires: DuckDB >= 1.5 with `quack` extension available. See [Quack documentation](https://duckdb.org/quack/).
+
+Quack is DuckDB's native client-server protocol. Since it's just another DuckDB extension, **duckdb_fdw supports it with zero code changes** — just load the extension and use `duckdb_execute` or `attach_catalogs`:
+
+```sql
+-- Create server with quack extension auto-loaded
+CREATE SERVER quack_srv FOREIGN DATA WRAPPER duckdb_fdw
+OPTIONS (
+    database '/tmp/quack_local.db',
+    extensions 'quack'
+);
+
+-- Connect to a remote DuckDB instance via Quack
+SELECT duckdb_execute('quack_srv',
+  $$CREATE SECRET (TYPE quack, TOKEN 'your_quack_token');
+    ATTACH 'quack:remote-host:9494' AS remote_db;$$);
+
+-- Map remote tables to PG
+IMPORT FOREIGN SCHEMA "remote_db" FROM SERVER quack_srv INTO public;
+
+-- Query remote data through standard PG SQL
+SELECT * FROM remote_table WHERE id > 1000;
+```
+
+### 8. Arbitrary DuckDB SQL
+
+The `duckdb_execute()` function lets you run any DuckDB SQL through the FDW connection — useful for DDL, extension management, or one-off operations:
+
+```sql
+SELECT duckdb_execute('duckdb_srv', 'CREATE TABLE tmp AS SELECT range AS id FROM range(1000)');
+SELECT duckdb_execute('duckdb_srv', 'INSTALL spatial; LOAD spatial;');
+```
+
+Result messages containing credentials (SECRET, KEY_ID, ACCESS_KEY, TOKEN, motherduck) are automatically redacted in error output for security.
+
 ## 📉 Feature Comparison
 
 | Feature | v1.x (Legacy) | v2.0+ (Native) |
@@ -158,11 +270,29 @@ SELECT * FROM part WHERE p_partkey = 1;
 | **Kernel Interface** | SQLite Compatibility | **Native DuckDB C API** |
 | **Data Transfer** | Row-by-row | **Chunk-based result scan via DuckDB C API** |
 | **Type Mapping** | Limited (Text-heavy) | **Full (Decimal/HugeInt/etc)** |
-| **Cloud Security** | Plaintext Keys | **Integrated Secret Manager** |
+| **Cloud Security** | Plaintext Keys | **Integrated Secret Manager + USER MAPPING** |
 | **Performance** | Basic | **Filter & Limit Pushdown** |
+| **MotherDuck** | ❌ | ✅ Auto-extension + token management |
+| **Quack** | ❌ | ✅ via `extensions 'quack'` (zero code changes) |
+
+## 🦆 How is this different from `pg_duckdb`?
+
+| | duckdb_fdw | pg_duckdb |
+|---|---|---|
+| **Direction** | PG → DuckDB data lake | DuckDB engine → PG tables |
+| **What it does** | Lets PG query DuckDB's world (Parquet, Iceberg, S3, MotherDuck, Quack) | Embeds DuckDB engine inside PG to accelerate PG-native queries |
+| **Deployment** | `CREATE EXTENSION` — no restart needed | `shared_preload_libraries` — requires PG restart |
+| **Data lake access** | FOREIGN TABLE + IMPORT FOREIGN SCHEMA | `read_parquet()` DuckDB functions |
+| **Learning curve** | Standard PG SQL | DuckDB-specific syntax for data lake functions |
+| **Codebase** | ~6,500 lines C | ~81,000 lines C++ |
+| **Can they coexist?** | Not in the same backend (both link `libduckdb.so`) | — |
+
+**They solve different problems.** `pg_duckdb` asks "how can DuckDB make PostgreSQL faster?" `duckdb_fdw` asks "how can PostgreSQL users access everything DuckDB can read?" If you need both, run them on separate PG instances.
 
 ## 🤝 Contributing
+
 Contributions are welcome. Current high-priority areas are production hardening, deterministic regression coverage, and eventually a true Arrow C Data read path.
 
 ## 📄 License
+
 [MIT License](LICENSE)
