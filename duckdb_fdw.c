@@ -427,7 +427,10 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
         {
             Node *n = (Node *) lfirst(lc);
             if (!duckdb_is_foreign_expr_full(root, joinrel, (Expr *) n, &glob_cxt))
+            {
+                pfree(fpinfo);
                 return false;
+            }
         }
 
         /*
@@ -437,7 +440,10 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
         {
             RestrictInfo *ri = (RestrictInfo *) lfirst(lc);
             if (!duckdb_is_foreign_expr_full(root, joinrel, ri->clause, &glob_cxt))
+            {
+                pfree(fpinfo);
                 return false;
+            }
         }
     }
 
@@ -924,10 +930,12 @@ duckdbBeginForeignModify(ModifyTableState *mtstate, ResultRelInfo *resultRelInfo
 	    duckdb_opt *options = duckdb_get_options(RelationGetRelid(rel));
 		duckdb_state state;
 	    festate->conn = duckdb_get_connection(GetForeignServer(GetForeignTable(RelationGetRelid(rel))->serverid), false);
-	    festate->table_name = options->svr_table;
-	    festate->tupdesc = RelationGetDescr(rel);
-		festate->use_appender = false;
-		state = duckdb_appender_create(festate->conn, NULL, festate->table_name, &festate->appender);
+    festate->table_name = options->svr_table;
+    festate->tupdesc = RelationGetDescr(rel);
+	festate->use_appender = false;
+    /* options->svr_table points into persistent catalog memory — safe to free the wrapper */
+    pfree(options);
+	state = duckdb_appender_create(festate->conn, NULL, festate->table_name, &festate->appender);
 		if (state == DuckDBSuccess)
 			festate->use_appender = true;
 	    resultRelInfo->ri_FdwState = (void *)festate;
