@@ -226,30 +226,46 @@ CREATE SERVER md_catalog_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
 IMPORT FOREIGN SCHEMA "my_db" FROM SERVER md_catalog_srv INTO public;
 ```
 
-### 7. Quack (Client-Server Protocol)
+### 7. Quack (Client-Server + Multi-Client Concurrent Writes)
 
-> Requires: DuckDB >= 1.5 with `quack` extension available. See [Quack documentation](https://duckdb.org/quack/).
+> Requires: DuckDB >= 1.5.2 with `quack` extension available. See [Quack documentation](https://duckdb.org/quack/).
 
-Quack is DuckDB's native client-server protocol. Since it's just another DuckDB extension, **duckdb_fdw supports it with zero code changes** — just load the extension and use `duckdb_execute` or `attach_catalogs`:
+Quack is DuckDB's native client-server protocol. duckdb_fdw supports it in two modes:
+
+#### Native Proxy Mode (Recommended)
+
+Set `quack_host` in the server options. duckdb_fdw automatically opens a local in-memory DuckDB, loads the Quack extension, creates a Quack SECRET, and ATTACHes the remote server. All foreign tables are created as `remote.schema.table` — queries are transparently routed to the Quack server.
 
 ```sql
--- Create server with quack extension auto-loaded
+-- Point to the Quack server
 CREATE SERVER quack_srv FOREIGN DATA WRAPPER duckdb_fdw
-OPTIONS (
-    database '/tmp/quack_local.db',
-    extensions 'quack'
-);
+OPTIONS (quack_host '192.168.1.10:9494');
 
--- Connect to a remote DuckDB instance via Quack
+-- Token in USER MAPPING (secure)
+CREATE USER MAPPING FOR current_user SERVER quack_srv
+OPTIONS (quack_token 'shared_secret');
+
+-- Create foreign tables pointing to the remote Quack server
+CREATE FOREIGN TABLE remote_orders (
+    id INT, amount DECIMAL, order_date DATE
+) SERVER quack_srv OPTIONS (table 'remote.analytics.orders');
+
+SELECT * FROM remote_orders WHERE amount > 1000;
+```
+
+This mode solves the classic DuckDB concurrency problem: **multiple PG backends can concurrently read and write the same DuckDB database** through a single Quack server process.
+
+#### Manual Mode
+
+For more control, use `duckdb_execute` to manage the Quack connection yourself:
+
+```sql
+CREATE SERVER quack_srv FOREIGN DATA WRAPPER duckdb_fdw
+OPTIONS (database '/tmp/quack_local.db', extensions 'quack');
+
 SELECT duckdb_execute('quack_srv',
-  $$CREATE SECRET (TYPE quack, TOKEN 'your_quack_token');
+  $$CREATE SECRET (TYPE quack, TOKEN 'your_token');
     ATTACH 'quack:remote-host:9494' AS remote_db;$$);
-
--- Map remote tables to PG
-IMPORT FOREIGN SCHEMA "remote_db" FROM SERVER quack_srv INTO public;
-
--- Query remote data through standard PG SQL
-SELECT * FROM remote_table WHERE id > 1000;
 ```
 
 ### 8. Arbitrary DuckDB SQL
