@@ -42,6 +42,9 @@ static struct DuckDBFdwOption valid_options[] =
     {"s3_endpoint", ForeignServerRelationId},
     {"s3_endpoint_type", ForeignServerRelationId}, /* e.g. 's3_tables' */
     {"s3_use_ssl", ForeignServerRelationId},
+    {"s3_url_style", ForeignServerRelationId},
+    {"init_sql", ForeignServerRelationId},
+    {"read_only", ForeignServerRelationId},
 
     /* S3 credentials can also be set per-user via USER MAPPING (preferred
      * for security — pg_foreign_server options are visible to all users
@@ -60,6 +63,7 @@ static struct DuckDBFdwOption valid_options[] =
     {"quack_host", ForeignServerRelationId}, /* host:port of the Quack server */
     {"quack_token", UserMappingRelationId},  /* Quack auth token (secure: user mapping) */
     {"quack_token", ForeignServerRelationId}, /* fallback: server option */
+    {"disable_ssl", ForeignServerRelationId}, /* for quack */
 
     /* Extensions */
     {"extensions", ForeignServerRelationId}, /* e.g., 'httpfs,spatial,iceberg' */

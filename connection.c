@@ -130,6 +130,8 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
     char *s3_secret_key = NULL;
     char *s3_endpoint = NULL;
     bool s3_use_ssl = true;
+    char *s3_url_style = NULL;
+    char *init_sql = NULL;
     char *extensions = NULL;
     char *attach_catalogs = NULL;
     char *motherduck_token = NULL;
@@ -165,6 +167,8 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         else if (strcmp(def->defname, "s3_secret_access_key") == 0 && s3_secret_key == NULL) s3_secret_key = defGetString(def);
         else if (strcmp(def->defname, "s3_endpoint") == 0) s3_endpoint = defGetString(def);
         else if (strcmp(def->defname, "s3_use_ssl") == 0) s3_use_ssl = defGetBoolean(def);
+        else if (strcmp(def->defname, "s3_url_style") == 0) s3_url_style = defGetString(def);
+        else if (strcmp(def->defname, "init_sql") == 0) init_sql = defGetString(def);
         else if (strcmp(def->defname, "extensions") == 0) extensions = defGetString(def);
         else if (strcmp(def->defname, "attach_catalogs") == 0) attach_catalogs = defGetString(def);
         else if (strcmp(def->defname, "motherduck_token") == 0 && motherduck_token == NULL)
@@ -236,8 +240,14 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 				appendStringInfo(&sql, "ENDPOINT %s, ", endpoint_lit);
 				pfree(endpoint_lit);
 			}
-	        appendStringInfo(&sql, "USE_SSL %s );", s3_use_ssl ? "true" : "false");
-	        duckdb_do_sql_command(conn, sql.data, ERROR);
+      if (s3_url_style)
+      {
+        char *style_lit = duckdb_fdw_quote_literal(s3_url_style);
+        appendStringInfo(&sql, "URL_STYLE %s, ", style_lit);
+        pfree(style_lit);
+      }
+	    appendStringInfo(&sql, "USE_SSL %s );", s3_use_ssl ? "true" : "false");
+	    duckdb_do_sql_command(conn, sql.data, ERROR);
 			pfree(key_lit);
 			pfree(secret_lit);
 			pfree(sql.data);
@@ -398,6 +408,12 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 	        }
 	        pfree(at_copy);
 	    }
+      
+    /* 6. Arbitrary custom initialization sql queries */
+    if (init_sql)
+    {
+        duckdb_do_sql_command(conn, init_sql, ERROR);
+    }
 }
 
 duckdb_connection
@@ -433,6 +449,8 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
         const char *dbpath = NULL;
         const char *quack_host = NULL;
         const char *quack_token = NULL;
+        char *disable_ssl = NULL;
+        bool read_only = false;
         Oid userid = GetUserId();
         ListCell *lc;
 
@@ -458,16 +476,35 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
                 dbpath = defGetString(def);
             else if (strcmp(def->defname, "quack_host") == 0)
                 quack_host = defGetString(def);
+            else if (strcmp(def->defname, "read_only") == 0)
+                read_only = defGetBoolean(def);
             else if (strcmp(def->defname, "quack_token") == 0 && quack_token == NULL)
                 quack_token = defGetString(def);
+            else if (strcmp(def->defname, "disable_ssl") == 0)
+                disable_ssl = defGetString(def);
         }
 
         /* Quack mode: use in-memory DuckDB if no database specified */
         if (quack_host && !dbpath)
             dbpath = ":memory:";
 
-        if (duckdb_open(dbpath, &entry->db) == DuckDBError)
-            elog(ERROR, "failed to open DuckDB");
+        /* Set up standard advanced config blocks to toggle access modifiers */
+        duckdb_config config;
+        if (duckdb_create_config(&config) == DuckDBError)
+            elog(ERROR, "failed to create DuckDB config wrapper");
+
+        if (read_only)
+        {
+            if (duckdb_set_config(config, "access_mode", "read_only") == DuckDBError)
+                elog(ERROR, "failed to set DuckDB access_mode to read_only");
+        }
+
+        if (duckdb_open_ext(dbpath, &entry->db, config, NULL) == DuckDBError)
+        {
+            duckdb_destroy_config(&config);
+            elog(ERROR, "failed to open DuckDB database connection entry");
+        }
+        duckdb_destroy_config(&config);
 	        if (duckdb_connect(entry->db, &entry->conn) == DuckDBError)
 	            elog(ERROR, "failed to connect to DuckDB");
 
@@ -480,7 +517,8 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
             char *attach_sql;
 
             duckdb_do_sql_command(entry->conn,
-                "INSTALL quack FROM core_nightly; LOAD quack;", ERROR);
+                // from duckdb 1.5.3 quack is in core
+                "INSTALL quack; LOAD quack;", ERROR); 
 
             if (quack_token)
             {
@@ -493,9 +531,19 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
             }
 
             host_lit = duckdb_fdw_quote_literal(quack_host);
-            attach_sql = psprintf("ATTACH 'quack:%s' AS remote;", quack_host);
+            if (disable_ssl)
+            {
+                attach_sql = psprintf("ATTACH 'quack:%s' AS remote (DISABLE_SSL %s);", 
+                                      quack_host, disable_ssl);
+            }
+            else
+            {
+                attach_sql = psprintf("ATTACH 'quack:%s' AS remote;", quack_host);
+            }
+
             duckdb_do_sql_command(entry->conn, attach_sql, ERROR);
             pfree(attach_sql);
+            pfree(host_lit);
         }
 	}
 	return entry->conn;

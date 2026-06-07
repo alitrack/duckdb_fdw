@@ -468,17 +468,32 @@ duckdbGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
 
         duckdb_estimate_path_cost_size(root, joinrel, fpinfo->joinclauses, NIL, NULL,
                                        &rows, NULL, &startup_cost, &total_cost);
+        #if PG_VERSION_NUM >= 180000
         add_path(joinrel, (Path *)
                  create_foreignscan_path(root, joinrel,
-                                          joinrel->reltarget,
-                                          rows,
-                                          startup_cost,
-                                          total_cost,
-                                          NIL,
-                                          joinrel->lateral_relids,
-                                          NULL,
-                                          NIL,
-                                          NIL));
+                                         joinrel->reltarget,
+                                         rows,
+                                         0, /* disabled_nodes */
+                                         startup_cost,
+                                         total_cost,
+                                         NIL,
+                                         joinrel->lateral_relids,
+                                         NULL,
+                                         NIL,
+                                         NIL));
+#else
+        add_path(joinrel, (Path *)
+                 create_foreignscan_path(root, joinrel,
+                                         joinrel->reltarget,
+                                         rows,
+                                         startup_cost,
+                                         total_cost,
+                                         NIL,
+                                         joinrel->lateral_relids,
+                                         NULL,
+                                         NIL,
+                                         NIL));
+#endif
     }
 }
 
@@ -564,6 +579,20 @@ duckdbGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid
 
     duckdb_estimate_path_cost_size(root, baserel, NIL, NIL, NULL,
                                    &rows, NULL, &startup_cost, &total_cost);
+    #if PG_VERSION_NUM >= 180000
+    add_path(baserel, (Path *)
+             create_foreignscan_path(root, baserel,
+                                     baserel->reltarget,
+                                     rows,
+                                     0, /* disabled_nodes */
+                                     startup_cost,
+                                     total_cost,
+                                     NIL,   /* no pathkeys */
+                                     NULL,  /* no required_outer */
+                                     NULL,  /* no fdw_outerpath */
+                                     NIL,   /* no fdw_restrictinfo */
+                                     NIL)); /* no fdw_private */
+#else
     add_path(baserel, (Path *)
              create_foreignscan_path(root, baserel,
                                      baserel->reltarget,
@@ -575,6 +604,7 @@ duckdbGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid
                                      NULL,  /* no fdw_outerpath */
                                      NIL,   /* no fdw_restrictinfo */
                                      NIL)); /* no fdw_private */
+#endif
 }
 
 static ForeignScan *
@@ -894,17 +924,32 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
         fpinfo->pushdown_safe = true;
         duckdb_estimate_path_cost_size(root, output_rel, NIL, NIL, NULL,
                                        &rows, NULL, &startup_cost, &total_cost);
+        #if PG_VERSION_NUM >= 180000
         add_path(output_rel, (Path *)
                  create_foreignscan_path(root, output_rel,
-                                          output_rel->reltarget,
-                                          rows,
-                                          startup_cost,
-                                          total_cost,
-                                          NIL,
-                                          NULL,
-                                          NULL,
-                                          NIL,
-                                          NIL));
+                                         output_rel->reltarget,
+                                         rows,
+                                         0, /* disabled_nodes */
+                                         startup_cost,
+                                         total_cost,
+                                         NIL,
+                                         NULL,
+                                         NULL,
+                                         NIL,
+                                         NIL));
+#else
+        add_path(output_rel, (Path *)
+                 create_foreignscan_path(root, output_rel,
+                                         output_rel->reltarget,
+                                         rows,
+                                         startup_cost,
+                                         total_cost,
+                                         NIL,
+                                         NULL,
+                                         NULL,
+                                         NIL,
+                                         NIL));
+#endif
     }
 }
 
@@ -972,6 +1017,7 @@ duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTab
 			StringInfoData sql;
 			int i;
 			char *relref = duckdb_build_relation_reference(festate->table_name);
+      char *s;
 
 			initStringInfo(&sql);
 			appendStringInfo(&sql, "INSERT INTO %s VALUES (", relref);
@@ -986,7 +1032,7 @@ duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTab
 				else {
 					Oid typ = TupleDescAttr(festate->tupdesc, i)->atttypid;
 					Oid out; bool var; getTypeOutputInfo(typ, &out, &var);
-					char *s = OidOutputFunctionCall(out, val);
+					s = OidOutputFunctionCall(out, val);
 					if (typ == BOOLOID) appendStringInfoString(&sql, (DatumGetBool(val) ? "true" : "false"));
 					else if (typ == INT4OID || typ == INT8OID || typ == FLOAT8OID) appendStringInfoString(&sql, s);
 					else {
@@ -1388,8 +1434,9 @@ duckdb_find_em_expr_for_input_target(PlannerInfo *root,
     }
 
     /* Fallback to rel-based search if target doesn't match directly */
-    if (fallbackRel)
+    if (fallbackRel) {
         return duckdb_find_em_expr_for_rel(ec, fallbackRel);
+    }
 
 	return NULL;
 }
@@ -1421,6 +1468,12 @@ duckdb_fdw_check_unsupported_pg_duckdb_coexistence(bool *newval, void **extra, G
 	return true;
 }
 
+
+/* Ensure _PG_init is explicitly exported for Windows DLL binding */
+#ifdef _WIN32
+__declspec(dllexport) void _PG_init(void);
+#endif
+
 void
 _PG_init(void)
 {
@@ -1440,8 +1493,17 @@ _PG_init(void)
 	 * Clear any pre-load placeholder or config-sourced value. The override
 	 * must be armed explicitly after duckdb_fdw is loaded into the backend.
 	 */
+
+#ifdef _WIN32
+  duckdb_fdw_allow_unsupported_pg_duckdb_coexistence = true;
+#endif
+
 	SetConfigOption("duckdb_fdw.allow_unsupported_pg_duckdb_coexistence",
-					"off",
+#if defined(_WIN32)
+          "on",
+#else
+          "off",
+#endif
 					PGC_SUSET,
 					PGC_S_SESSION);
 }

@@ -1,3 +1,4 @@
+# Maybe obsolete. Use cmake
 #-------------------------------------------------------------------------
 #
 # DuckDB Foreign Data Wrapper for PostgreSQL
@@ -36,7 +37,7 @@ ifeq ($(detected_OS),Linux)
     DLSUFFIX = .so
     PG_CXXFLAGS = -std=c++11
     # 针对现代环境的 ABI 兼容性设置
-    PG_CPPFLAGS += -D_GLIBCXX_USE_CXX11_ABI=0
+    #PG_CPPFLAGS += -D_GLIBCXX_USE_CXX11_ABI=0
     SHLIB_LINK += -ldl
 endif
 

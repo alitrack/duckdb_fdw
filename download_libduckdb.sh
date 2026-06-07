@@ -28,7 +28,7 @@ get_system_info() {
                     ARCH="amd64"
                     ;;
                 "aarch64"|"arm64")
-                    ARCH="aarch64"
+                    ARCH="arm64"
                     ;;
             esac
             LIB_EXT="so"
@@ -51,8 +51,6 @@ get_system_info
 # Resolve requested version
 REQUESTED_VERSION=${DUCKDB_VERSION:-$DEFAULT_DUCKDB_VERSION}
 VERSION=$(normalize_version_tag "$REQUESTED_VERSION")
-
-
 
 # Construct download URL
 DOWNLOAD_URL="https://github.com/duckdb/duckdb/releases/download/${VERSION}/libduckdb-${PLATFORM}-${ARCH}.zip"

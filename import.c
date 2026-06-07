@@ -139,26 +139,49 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 
 	        if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
 	            elog(ERROR, "Failed to create foreign table via SPI: %s", ddl.data);
-    }
-    else
+  }
+else
     {
         /*
-         * 1. Get list of tables first.
-         * 2. For each table, use DESCRIBE to get accurate column info.
+         * 1. Get a list of tables and views from information_schema.tables.
+         * If using Quack proxy mode, evaluate via remote.query() wrapper.
+         * 2. For each, use DESCRIBE to get accurate column info.
          */
-	        duckdb_result tables_res;
-			char *remote_schema_lit;
-			if (!duckdb_fdw_is_safe_sql_fragment(stmt->remote_schema))
-				ereport(ERROR,
-						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
-						 errmsg("remote schema contains unsafe SQL fragment")));
-			remote_schema_lit = duckdb_fdw_quote_literal(stmt->remote_schema);
-	        appendStringInfo(&query,
-	            "SELECT database_name, schema_name, table_name "
-	            "FROM %sduckdb_tables() "
-	            "WHERE database_name = %s OR schema_name = %s",
-	            quack_prefix, remote_schema_lit, remote_schema_lit);
-			pfree(remote_schema_lit);
+        duckdb_result tables_res;
+        char *remote_schema_lit;
+
+        if (!duckdb_fdw_is_safe_sql_fragment(stmt->remote_schema))
+                ereport(ERROR,
+                                (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+                                 errmsg("remote schema contains unsafe SQL fragment")));
+        remote_schema_lit = duckdb_fdw_quote_literal(stmt->remote_schema);
+
+        /* If Quack proxy mode is active, wrap the evaluation inside remote.query() */
+        if (is_quack)
+        {
+            char *inner_query = psprintf(
+                "SELECT table_catalog, table_schema, table_name "
+                "FROM information_schema.tables "
+                "WHERE table_schema = %s "
+                "AND table_type IN ('BASE TABLE', 'VIEW')", 
+                remote_schema_lit);
+            
+            char *inner_query_lit = duckdb_fdw_quote_literal(inner_query);
+            appendStringInfo(&query, "FROM %squery(%s)", quack_prefix, inner_query_lit);
+            
+            pfree(inner_query);
+            pfree(inner_query_lit);
+        }
+        else
+        {
+            appendStringInfo(&query,
+                "SELECT table_catalog, table_schema, table_name "
+                "FROM %sinformation_schema.tables "
+                "WHERE table_schema = %s "
+                "AND table_type IN ('BASE TABLE', 'VIEW')",
+                quack_prefix, remote_schema_lit);
+        }
+        pfree(remote_schema_lit);
 
         if (duckdb_query(conn, query.data, &tables_res) == DuckDBError)
             elog(ERROR, "DuckDB: %s", duckdb_result_error(&tables_res));
@@ -179,15 +202,27 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
             appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (",
                              quote_identifier(stmt->local_schema), quote_identifier(tname));
 
-            appendStringInfo(&desc_query, "DESCRIBE SELECT * FROM %s%s.%s.%s",
-                             quack_prefix,
-                             quote_identifier(dbname), quote_identifier(schname), quote_identifier(tname));
+            /* * CRITICAL FIX FOR QUACK PROXY MODE:
+             * Replace dbname ("memory") with the literal attached name ("remote")
+             * so that DuckDB resolves the path correctly as: remote.main.table_name
+             */
+            if (is_quack)
+            {
+                appendStringInfo(&desc_query, "DESCRIBE SELECT * FROM remote.%s.%s",
+                                 quote_identifier(schname), quote_identifier(tname));
+            }
+            else
+            {
+                appendStringInfo(&desc_query, "DESCRIBE SELECT * FROM %s.%s.%s",
+                                 quote_identifier(dbname), quote_identifier(schname), quote_identifier(tname));
+            }
 
-	            if (duckdb_query(conn, desc_query.data, &col_res) != DuckDBError)
-	            {
-					char *remote_table_pg_lit;
-					char *remote_table_name;
-	                bool first_col = true;
+            if (duckdb_query(conn, desc_query.data, &col_res) != DuckDBError)
+            {
+                char *remote_table_pg_lit;
+                char *remote_table_name;
+                bool first_col = true;
+                
                 for (idx_t j = 0; j < duckdb_row_count(&col_res); j++)
                 {
                     char *cname = duckdb_value_varchar(&col_res, 0, j);
@@ -199,17 +234,30 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 
                     duckdb_free(cname); duckdb_free(ctype);
                 }
-						remote_table_name = psprintf("%s.%s.%s", dbname, schname, tname);
-						remote_table_pg_lit = quote_literal_cstr(remote_table_name);
-						pfree(remote_table_name);
-		                appendStringInfo(&ddl, ") SERVER %s OPTIONS (table %s)",
-		                                 quote_identifier(server->servername), remote_table_pg_lit);
-						pfree(remote_table_pg_lit);
+                
+                /* Keep the dynamic options reference tracking target identical */
+                if (is_quack)
+                    remote_table_name = psprintf("remote.%s.%s", schname, tname);
+                else
+                    remote_table_name = psprintf("%s.%s.%s", dbname, schname, tname);
+
+                remote_table_pg_lit = quote_literal_cstr(remote_table_name);
+                pfree(remote_table_name);
+                
+                appendStringInfo(&ddl, ") SERVER %s OPTIONS (table %s)",
+                                 quote_identifier(server->servername), remote_table_pg_lit);
+                pfree(remote_table_pg_lit);
 
                 if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
                     elog(ERROR, "Failed to create foreign table: %s", ddl.data);
 
                 duckdb_destroy_result(&col_res);
+            }
+            else
+            {
+                /* Fallback error notification if DESCRIBE query breaks down */
+                elog(ERROR, "DuckDB schema discovery failed for object %s.%s: %s", 
+                     schname, tname, duckdb_result_error(&col_res));
             }
 
             duckdb_free(dbname); duckdb_free(schname); duckdb_free(tname);
@@ -217,6 +265,8 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
         }
         duckdb_destroy_result(&tables_res);
     }
+
+
 
     SPI_finish();
     return NIL;

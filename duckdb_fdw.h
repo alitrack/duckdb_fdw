@@ -1,8 +1,14 @@
 #ifndef duckdb_fdw_H
 #define duckdb_fdw_H
 
-#include "duckdb.h"
 #include "postgres.h"
+#if PG_VERSION_NUM >= 180000
+#include "commands/explain_state.h"
+#include "commands/explain_format.h"
+#else
+#include "commands/explain.h"
+#endif
+#include "duckdb.h"
 #include "nanoarrow/nanoarrow.h"
 #include "funcapi.h"
 #include "fmgr.h"
@@ -94,14 +100,21 @@ typedef struct DuckDBFdwExecState
 } DuckDBFdwExecState;
 
 /* Exported functions */
-extern Datum duckdb_fdw_handler(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_validator(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_version(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_runtime_compatibility_status(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_runtime_fingerprint(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_preflight(PG_FUNCTION_ARGS);
-extern Datum duckdb_execute(PG_FUNCTION_ARGS);
-extern Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS);
+/* Exported functions */
+#if defined(_WIN32)
+#define FDW_EXPORT __declspec(dllexport)
+#else
+#define FDW_EXPORT extern
+#endif
+
+FDW_EXPORT Datum duckdb_fdw_handler(PG_FUNCTION_ARGS);
+FDW_EXPORT Datum duckdb_fdw_validator(PG_FUNCTION_ARGS);
+FDW_EXPORT Datum duckdb_fdw_version(PG_FUNCTION_ARGS);
+FDW_EXPORT Datum duckdb_fdw_runtime_compatibility_status(PG_FUNCTION_ARGS);
+FDW_EXPORT Datum duckdb_fdw_runtime_fingerprint(PG_FUNCTION_ARGS);
+FDW_EXPORT Datum duckdb_fdw_preflight(PG_FUNCTION_ARGS);
+FDW_EXPORT Datum duckdb_execute(PG_FUNCTION_ARGS);
+FDW_EXPORT Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS);
 extern List *duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid);
 extern duckdb_opt * duckdb_get_options(Oid foreigntableid);
 extern char *duckdb_fdw_quote_literal(const char *input);
