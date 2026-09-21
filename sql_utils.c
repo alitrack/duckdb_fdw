@@ -91,10 +91,39 @@ duckdb_fdw_is_safe_sql_fragment(const char *input)
 		if (*p < 32 && *p != '\t' && *p != '\n' && *p != '\r')
 			return false;
 	}
-	if (strstr(input, "--") != NULL)
-		return false;
-	if (strstr(input, "/*") != NULL || strstr(input, "*/") != NULL)
-		return false;
+	/*
+	 * Comment sequences only matter outside string literals: DuckDB globs in
+	 * table options (e.g. a parquet path with wildcard stars) legitimately
+	 * contain an asterisk and a slash-asterisk inside quotes, so a plain
+	 * strstr for those sequences produced false positives (issue #72). Walk
+	 * the fragment tracking single- and double-quoted string state and reject
+	 * a block or line comment only when it appears outside a quoted string.
+	 */
+	for (p = (const unsigned char *) input; *p; p++)
+	{
+		if (*p == '\'' || *p == '"')
+		{
+			char		q = *p;
+
+			/* skip to the closing quote; '' or "" is an escaped quote */
+			while (*++p)
+			{
+				if (*p == q)
+				{
+					if (p[1] == q)
+						p++;
+					else
+						break;
+				}
+			}
+			if (*p == '\0')
+				return false;	/* unterminated string literal */
+		}
+		else if (*p == '/' && p[1] == '*')
+			return false;	/* block comment */
+		else if (*p == '-' && p[1] == '-')
+			return false;	/* line comment */
+	}
 	return true;
 }
 
