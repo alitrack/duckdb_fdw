@@ -877,15 +877,88 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
     if (stage != UPPERREL_GROUP_AGG)
         return;
 
+    GroupPathExtraData *grouping_extra = (GroupPathExtraData *) extra;
+    DuckDBFdwRelationInfo *ofpinfo =
+        (DuckDBFdwRelationInfo *) input_rel->fdw_private;
+
+    /*
+     * If the underlying scan has local conditions, they must be applied
+     * before the aggregation runs; DuckDB can only evaluate a WHERE over its
+     * own scan, so an aggregation on top of a locally-filtered scan cannot
+     * be pushed as one remote query.  (Without this guard the remote
+     * GROUP BY would silently aggregate unfiltered rows.)
+     */
+    if (ofpinfo->local_conds != NIL)
+        return;
+
     fpinfo = (DuckDBFdwRelationInfo *) palloc0(sizeof(DuckDBFdwRelationInfo));
     fpinfo->pushdown_safe = false;
     fpinfo->outerrel = input_rel;
-    fpinfo->foreigntableid = ((DuckDBFdwRelationInfo *) input_rel->fdw_private)->foreigntableid;
-    fpinfo->server = ((DuckDBFdwRelationInfo *) input_rel->fdw_private)->server;
-    fpinfo->user = ((DuckDBFdwRelationInfo *) input_rel->fdw_private)->user;
+    fpinfo->foreigntableid = ofpinfo->foreigntableid;
+    fpinfo->server = ofpinfo->server;
+    fpinfo->user = ofpinfo->user;
     output_rel->fdw_private = fpinfo;
 
-    if (duckdb_is_foreign_expr(root, output_rel, (Expr *) output_rel->reltarget->exprs))
+    if (!duckdb_is_foreign_expr(root, output_rel, (Expr *) output_rel->reltarget->exprs))
+        return;
+
+    /*
+     * Classify the HAVING quals: those evaluable remotely go to
+     * fpinfo->remote_conds (deparse emits them as the HAVING clause), the
+     * rest to fpinfo->local_conds (re-applied by the local plan).  Without
+     * this classification remote_conds stays NULL and the HAVING clause is
+     * silently dropped from the remote query, returning unfiltered groups.
+     * The core planner does not wrap HAVING quals in RestrictInfos, so we
+     * make our own.
+     */
+    if (grouping_extra->havingQual != NULL)
+    {
+        ListCell   *lc;
+
+        foreach(lc, (List *) grouping_extra->havingQual)
+        {
+            Expr       *hexpr = (Expr *) lfirst(lc);
+            RestrictInfo *rinfo;
+
+            Assert(!IsA(hexpr, RestrictInfo));
+            rinfo = make_restrictinfo(root, hexpr, true, false, false, false,
+                                      root->qual_security_level,
+                                      output_rel->relids, NULL, NULL);
+            if (duckdb_is_foreign_expr(root, output_rel, hexpr))
+                fpinfo->remote_conds = lappend(fpinfo->remote_conds, rinfo);
+            else
+                fpinfo->local_conds = lappend(fpinfo->local_conds, rinfo);
+        }
+    }
+
+    /*
+     * Aggregates referenced by HAVING quals kept local still have to be
+     * computed remotely (the group aggregates are not available locally),
+     * so every such aggregate must be shippable.
+     */
+    if (fpinfo->local_conds != NIL)
+    {
+        List       *aggvars = NIL;
+        ListCell   *lc;
+
+        foreach(lc, fpinfo->local_conds)
+        {
+            RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc);
+
+            aggvars = list_concat(aggvars,
+                                  pull_var_clause((Node *) rinfo->clause,
+                                                  PVC_INCLUDE_AGGREGATES));
+        }
+        foreach(lc, aggvars)
+        {
+            Expr       *expr = (Expr *) lfirst(lc);
+
+            if (IsA(expr, Aggref) &&
+                !duckdb_is_foreign_expr(root, output_rel, expr))
+                return;
+        }
+    }
+
     {
         double rows;
         Cost startup_cost;
