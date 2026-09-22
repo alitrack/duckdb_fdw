@@ -19,6 +19,7 @@ typedef struct duckdb_opt
 	char	   *svr_database;
 	char	   *svr_table;
     bool        use_remote_estimate;
+    bool        force_readonly;
 } duckdb_opt;
 
 typedef struct DuckDBFdwRelationInfo
@@ -117,6 +118,8 @@ extern bool duckdb_fdw_is_safe_sql_fragment(const char *input);
 extern char *duckdb_fdw_redact_secret_text(const char *input);
 extern char *duckdb_fdw_trim_token(char *token);
 extern char *duckdb_fdw_next_token(char *str, const char *delim, char **saveptr);
+extern bool duckdb_fdw_server_is_readonly(ForeignServer *server);
+extern bool duckdb_fdw_sql_is_readonly(const char *sql);
 
 /* Internal functions */
 extern void duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level);

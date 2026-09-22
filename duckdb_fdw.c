@@ -1506,7 +1506,17 @@ duckdbIsForeignRelUpdatable(Relation rel)
 	 * SQL fallback path. UPDATE and DELETE are not supported — the
 	 * planner will skip FDW modify paths for those operations rather
 	 * than failing at execution time.
+	 *
+	 * Servers created with force_readonly reject all DML at plan time.
 	 */
+	ForeignTable *ftable;
+
+	if (rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
+	{
+		ftable = GetForeignTable(rel->rd_id);
+		if (duckdb_fdw_server_is_readonly(GetForeignServer(ftable->serverid)))
+			return 0;
+	}
 	return (1 << CMD_INSERT);
 }
 
@@ -1880,7 +1890,20 @@ PG_FUNCTION_INFO_V1(duckdb_execute);
 Datum duckdb_execute(PG_FUNCTION_ARGS) {
     char *servername = NameStr(*PG_GETARG_NAME(0));
     char *query = text_to_cstring(PG_GETARG_TEXT_PP(1));
-    duckdb_connection conn = duckdb_get_connection(GetForeignServerByName(servername, false), false);
+    ForeignServer *server = GetForeignServerByName(servername, false);
+
+    /*
+     * force_readonly servers reject anything but conservative read-only
+     * statements through the generic escape hatch as well.  File-backed
+     * databases additionally cannot be written because DuckDB itself
+     * opens them READ_ONLY; this gate also covers :memory: databases.
+     */
+    if (duckdb_fdw_server_is_readonly(server) &&
+        !duckdb_fdw_sql_is_readonly(query))
+        elog(ERROR, "duckdb_fdw: statement rejected on force_readonly server %s",
+             servername);
+
+    duckdb_connection conn = duckdb_get_connection(server, false);
     duckdb_do_sql_command(conn, query, LOG);
     PG_RETURN_VOID();
 }

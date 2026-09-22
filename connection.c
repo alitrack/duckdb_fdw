@@ -9,7 +9,14 @@
 #include "commands/defrem.h"
 #include "lib/stringinfo.h"
 
-typedef Oid ConnCacheKey;
+typedef struct ConnCacheKey
+{
+	Oid			serverid;
+	bool		force_readonly;	/* connections opened for read-only servers
+								 * are tracked separately so that a server
+								 * re-created without the option (or vice
+								 * versa) does not reuse a stale connection */
+} ConnCacheKey;
 
 typedef struct ConnCacheEntry
 {
@@ -425,8 +432,22 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 		ConnectionXactCallbackRegistered = true;
 	}
 
-	key = server->serverid;
+	key.serverid = server->serverid;
+	key.force_readonly = duckdb_fdw_server_is_readonly(server);
 	entry = hash_search(ConnectionHash, &key, HASH_ENTER, &found);
+
+	if (!found)
+	{
+		/*
+		 * hash_search initializes a new entry from the key bytes only;
+		 * the db/conn fields hold whatever the key happened to contain.
+		 * Zero them so that a failed open (e.g. missing user mapping)
+		 * aborting mid-creation cannot leave the cache entry holding
+		 * garbage handles that the cleanup callback would close.
+		 */
+		entry->db = NULL;
+		entry->conn = NULL;
+	}
 
 	if (!found || entry->conn == NULL)
 	{
@@ -466,7 +487,29 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
         if (quack_host && !dbpath)
             dbpath = ":memory:";
 
-        if (duckdb_open(dbpath, &entry->db) == DuckDBError)
+        /*
+         * force_readonly: open the file database in read-only mode at the
+         * DuckDB engine level, so any write statement is rejected by
+         * DuckDB itself regardless of the code path that reaches it
+         * (foreign table DML, duckdb_execute, batch insert, ...).
+         * In-memory databases cannot be opened read-only; for those the
+         * FDW-level enforcement (IsForeignRelUpdatable = 0 and the
+         * duckdb_execute read-only gate) still applies.
+         */
+        if (key.force_readonly && dbpath &&
+            strcmp(dbpath, ":memory:") != 0)
+        {
+            duckdb_config cfg = NULL;
+            char *err = NULL;
+
+            if (duckdb_create_config(&cfg) != DuckDBSuccess ||
+                duckdb_set_config(cfg, "access_mode", "READ_ONLY") != DuckDBSuccess)
+                elog(ERROR, "duckdb_fdw: failed to create read-only DuckDB configuration");
+            if (duckdb_open_ext(dbpath, &entry->db, cfg, &err) == DuckDBError)
+                elog(ERROR, "failed to open DuckDB in read-only mode: %s",
+                     err ? err : "unknown error");
+        }
+        else if (duckdb_open(dbpath, &entry->db) == DuckDBError)
             elog(ERROR, "failed to open DuckDB");
 	        if (duckdb_connect(entry->db, &entry->conn) == DuckDBError)
 	            elog(ERROR, "failed to connect to DuckDB");

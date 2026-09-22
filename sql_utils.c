@@ -1,5 +1,6 @@
 #include "postgres.h"
 #include "duckdb_fdw.h"
+#include "commands/defrem.h"
 
 #include <ctype.h>
 
@@ -176,4 +177,103 @@ duckdb_fdw_next_token(char *str, const char *delim, char **saveptr)
 #else
 	return strtok_r(str, delim, saveptr);
 #endif
+}
+
+/*
+ * Returns true when the foreign server was created with
+ * force_readonly = true. Server-level option, checked directly from the
+ * catalog (no foreign table involved).
+ */
+bool
+duckdb_fdw_server_is_readonly(ForeignServer *server)
+{
+	ListCell   *lc;
+
+	if (!server || !server->options)
+		return false;
+
+	foreach(lc, server->options)
+	{
+		DefElem    *def = (DefElem *) lfirst(lc);
+
+		if (strcmp(def->defname, "force_readonly") == 0 &&
+			defGetBoolean(def))
+			return true;
+	}
+	return false;
+}
+
+/*
+ * Conservative read-only classifier for duckdb_execute on force_readonly
+ * servers. Only statements that cannot possibly modify DuckDB state are
+ * accepted; everything else is rejected. This intentionally errs on the
+ * side of refusal: a statement that is hard to classify is treated as a
+ * write.
+ *
+ * Allowed first keywords: SELECT, FROM, WITH, VALUES, DESCRIBE, DESC,
+ * SHOW, EXPLAIN, PRAGMA (query pragmas only; see below).
+ */
+bool
+duckdb_fdw_sql_is_readonly(const char *sql)
+{
+	static const struct
+	{
+		const char *keyword;
+		int			len;
+	} readonly_kw[] = {
+		{"SELECT", 6},
+		{"FROM", 4},
+		{"WITH", 4},
+		{"VALUES", 6},
+		{"DESCRIBE", 8},
+		{"DESC", 4},
+		{"SHOW", 4},
+		{"EXPLAIN", 7},
+	};
+	const char *p;
+	size_t		i;
+
+	if (!sql)
+		return false;
+
+	/* Skip leading whitespace and comments */
+	for (p = sql; *p; p++)
+	{
+		if (*p == '/' && p[1] == '*')
+		{
+			/* block comment: skip to closing */
+			p += 2;
+			while (*p && !(*p == '*' && p[1] == '/'))
+				p++;
+			if (*p == '\0')
+				return false;	/* unterminated comment */
+			continue;
+		}
+		if (*p == '-' && p[1] == '-')
+		{
+			/* line comment: skip to end of line */
+			p += 2;
+			while (*p && *p != '\n')
+				p++;
+			continue;
+		}
+		if (!isspace((unsigned char) *p))
+			break;
+	}
+
+	/* Statement chaining is never allowed on read-only servers */
+	for (i = (size_t) (p - sql); i < strlen(sql); i++)
+		if (sql[i] == ';')
+			return false;
+
+	for (i = 0; i < lengthof(readonly_kw); i++)
+	{
+		if ((size_t) strlen(p) >= readonly_kw[i].len &&
+			pg_strncasecmp(p, readonly_kw[i].keyword, readonly_kw[i].len) == 0 &&
+			(p[readonly_kw[i].len] == '\0' ||
+			 isspace((unsigned char) p[readonly_kw[i].len])))
+			return true;
+	}
+
+	return false;
 }

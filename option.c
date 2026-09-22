@@ -70,6 +70,7 @@ static struct DuckDBFdwOption valid_options[] =
 	
     /* Execution options */
 	{"use_remote_estimate", ForeignServerRelationId},
+	{"force_readonly", ForeignServerRelationId},
 	
 	{NULL, InvalidOid}
 };
@@ -153,6 +154,8 @@ duckdb_get_options(Oid foreignoid)
 			opt->svr_table = defGetString(def);
 		else if (strcmp(def->defname, "use_remote_estimate") == 0)
 			opt->use_remote_estimate = defGetBoolean(def);
+		else if (strcmp(def->defname, "force_readonly") == 0)
+			opt->force_readonly = defGetBoolean(def);
 	}
 
 	/* If table name is not specified, use Postgres relation name */
