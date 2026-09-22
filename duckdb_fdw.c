@@ -38,9 +38,11 @@ PG_MODULE_MAGIC;
 bool duckdb_fdw_allow_unsupported_pg_duckdb_coexistence = false;
 
 static void duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreignrel,
-										   List *param_join_conds, List *pathkeys,
-										   void *fpextra, double *p_rows, int *p_width,
-										   Cost *p_startup_cost, Cost *p_total_cost);
+					   List *param_join_conds, List *pathkeys,
+					   void *fpextra, double *p_rows, int *p_width,
+					   Cost *p_startup_cost, Cost *p_total_cost);
+static bool duckdb_chunk_types_ok(duckdb_result *res, TupleDesc tupdesc,
+								  List *retrieved_attrs);
 static bool duckdb_fdw_check_unsupported_pg_duckdb_coexistence(bool *newval,
 															   void **extra,
 															   GucSource source);
@@ -223,6 +225,101 @@ duckdb_fetch_next_chunk(DuckDBFdwExecState *festate)
 
 	festate->current_chunk_row_count = duckdb_data_chunk_get_size(festate->current_chunk);
 	return festate->current_chunk_row_count > 0;
+}
+
+/*
+ * duckdb_chunk_types_ok
+ *  The fast chunk-scan path in duckdbIterateForeignScan reads each vector
+ *  element as a fixed-width physical value sized by the *Postgres* column
+ *  type (e.g. ((int64_t *) data)[row]).  That is only correct when the
+ *  underlying DuckDB column is stored with exactly that physical width.
+ *
+ *  DuckDB widens some results beyond their Postgres counterpart: notably
+ *  sum(int) / sum(smallint) / sum(tinyint) return HUGEINT (16 bytes), and
+ *  an aggregate over a BIGINT expression can as well.  Reading a 16-byte
+ *  vector with an 8-byte stride walks the high 64 bits on alternate rows,
+ *  silently corrupting roughly half the values (e.g. sum columns coming
+ *  back as 0 on odd-indexed rows).
+ *
+ *  When every retrieved column's DuckDB type is one of the fixed-width
+ *  physical types the fast path assumes, it is safe to use; otherwise
+ *  (HUGEINT, UBIGINT, DECIMAL, VARCHAR, LIST, ...) fall back to the
+ *  type-correct duckdb_value_to_pg() text path.
+ */
+static bool
+duckdb_chunk_types_ok(duckdb_result *res, TupleDesc tupdesc, List *retrieved_attrs)
+{
+	ListCell   *lc;
+	int			i = 0;
+
+	if (res == NULL || tupdesc == NULL || retrieved_attrs == NIL)
+		return false;
+
+	foreach(lc, retrieved_attrs)
+	{
+		int			attnum_pg = lfirst_int(lc);
+		Oid			pgtype;
+		duckdb_type dt;
+
+		if (attnum_pg <= 0 || attnum_pg > tupdesc->natts)
+			return false;
+
+		pgtype = TupleDescAttr(tupdesc, attnum_pg - 1)->atttypid;
+		dt = duckdb_column_type(res, i);
+
+		switch (pgtype)
+		{
+			case BOOLOID:
+				if (dt != DUCKDB_TYPE_BOOLEAN)
+					return false;
+				break;
+			case INT2OID:
+				if (dt != DUCKDB_TYPE_SMALLINT &&
+					dt != DUCKDB_TYPE_TINYINT)
+					return false;
+				break;
+			case INT4OID:
+				if (dt != DUCKDB_TYPE_INTEGER &&
+					dt != DUCKDB_TYPE_SMALLINT &&
+					dt != DUCKDB_TYPE_TINYINT)
+					return false;
+				break;
+			case INT8OID:
+				/*
+				 * Only a true 8-byte BIGINT is safe.  HUGEINT / UBIGINT /
+				 * UINTEGER are wider or unsigned and must not be read with
+				 * an 8-byte stride.
+				 */
+				if (dt != DUCKDB_TYPE_BIGINT)
+					return false;
+				break;
+			case FLOAT4OID:
+				if (dt != DUCKDB_TYPE_FLOAT)
+					return false;
+				break;
+			case FLOAT8OID:
+				if (dt != DUCKDB_TYPE_DOUBLE)
+					return false;
+				break;
+			case DATEOID:
+				if (dt != DUCKDB_TYPE_DATE)
+					return false;
+				break;
+			case TIMESTAMPOID:
+				if (dt != DUCKDB_TYPE_TIMESTAMP)
+					return false;
+				break;
+			case TIMESTAMPTZOID:
+				if (dt != DUCKDB_TYPE_TIMESTAMP_TZ)
+					return false;
+				break;
+			default:
+				return false;
+		}
+		i++;
+	}
+
+	return true;
 }
 
 static bool
@@ -842,7 +939,18 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 	festate->current_chunk_row_idx = 0;
 	festate->global_row_idx = 0;
 	festate->use_chunk_scan = duckdb_can_use_chunk_scan(festate->tupdesc,
-														 festate->retrieved_attrs);
+														festate->retrieved_attrs);
+	/*
+	 * The fast path assumes each vector element has the physical width of
+	 * its Postgres type.  DuckDB widens some results (e.g. sum(int) is a
+	 * 16-byte HUGEINT), so only trust the fast path when every retrieved
+	 * column's DuckDB type actually matches; otherwise fall back to the
+	 * type-correct text path.
+	 */
+	if (festate->use_chunk_scan)
+		festate->use_chunk_scan =
+			duckdb_chunk_types_ok(&festate->res, festate->tupdesc,
+								  festate->retrieved_attrs);
 	if (festate->use_chunk_scan)
 		festate->use_chunk_scan = duckdb_fetch_next_chunk(festate);
 	if (!festate->use_chunk_scan)
