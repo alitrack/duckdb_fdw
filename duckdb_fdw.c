@@ -8,6 +8,8 @@
 #include "foreign/fdwapi.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+#include "optimizer/paths.h"
+#include "catalog/pg_collation.h"
 #include "optimizer/planmain.h"
 #include "utils/memutils.h"
 #include "utils/builtins.h"
@@ -48,8 +50,12 @@ static void duckdb_jsonb_append_string_field(StringInfo buf, const char *key,
 static void duckdb_jsonb_append_bool_field(StringInfo buf, const char *key,
 										   bool value, bool *first_field);
 static void duckdb_fdw_preflight_probe(bool *installed_in_database,
-									   bool *available_in_instance,
-									   bool *catalog_lookup_ok);
+                                       bool *available_in_instance,
+                                       bool *catalog_lookup_ok);
+static bool duckdb_pathkeys_all_foreign(PlannerInfo *root, RelOptInfo *rel,
+                                        List *pathkeys);
+static void duckdb_add_presorted_foreign_paths(PlannerInfo *root,
+                                               RelOptInfo *rel);
 
 static char *
 duckdb_build_relation_reference(const char *table_name)
@@ -575,6 +581,150 @@ duckdbGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid
                                      NULL,  /* no fdw_outerpath */
                                      NIL,   /* no fdw_restrictinfo */
                                      NIL)); /* no fdw_private */
+
+    /*
+     * Also offer a pre-sorted variant when the query's ORDER BY can be
+     * produced by DuckDB, so a plain scan doesn't force a local Sort.
+     */
+    duckdb_add_presorted_foreign_paths(root, baserel);
+}
+
+/*
+ * duckdb_pathkeys_all_foreign
+ *	True if every pathkey can be pushed down to DuckDB.  We require that the
+ *	sort follows each column type's default ordering (the type's default
+ *	btree collation, using the standard < or > comparator) and that the
+ *	equivalent expression is shippable.
+ *
+ * This mirrors postgres_fdw's is_foreign_pathkey().  Exotic operator classes
+ * and collations (e.g. text_pattern_ops, ICU collations) are deliberately not
+ * pushed down: DuckDB's collation handling does not guarantee to match
+ * Postgres, and falling back to a local Sort is always correct.
+ */
+static bool
+duckdb_pathkeys_all_foreign(PlannerInfo *root, RelOptInfo *rel, List *pathkeys)
+{
+	ListCell   *lc;
+
+	foreach(lc, pathkeys)
+	{
+		PathKey    *pathkey = (PathKey *) lfirst(lc);
+		Expr	   *em_expr;
+
+		/*
+		 * The comparator must be the type's standard < or > operator.
+		 */
+		if (pathkey->pk_strategy != BTLessStrategyNumber &&
+			pathkey->pk_strategy != BTGreaterStrategyNumber)
+			return false;
+
+		/*
+		 * Collation safety.  DuckDB has no notion of Postgres collations and
+		 * always sorts text by its native (byte / UTF-8) ordering.  That
+		 * matches Postgres only for non-collatable types (int, float, date,
+		 * ... -- eclass collation is InvalidOid, and for collatable non-C
+		 * types the collation-less "default" which is OID 100) and for the C
+		 * collation itself.  Any other collation (locale / ICU /
+		 * text_pattern_ops) could order rows differently, so do not push the
+		 * sort down and let the planner use a local Sort instead.
+		 */
+		if (pathkey->pk_eclass->ec_collation != InvalidOid &&
+			pathkey->pk_eclass->ec_collation != DEFAULT_COLLATION_OID &&
+			pathkey->pk_eclass->ec_collation != C_COLLATION_OID)
+			return false;
+
+		/*
+		 * The EC must contain a shippable expression computed from this
+		 * relation, else DuckDB cannot evaluate the sort key.
+		 */
+		em_expr = duckdb_find_em_expr_for_rel(pathkey->pk_eclass, rel);
+		if (em_expr == NULL)
+			return false;
+		if (!duckdb_is_foreign_expr(root, rel, em_expr))
+			return false;
+	}
+	return true;
+}
+
+/*
+ * duckdb_add_presorted_foreign_paths
+ *	For a base or join relation, add pre-sorted ForeignPaths carrying
+ *	root->query_pathkeys (which is root->sort_pathkeys at this planning
+ *	stage for a simple SELECT ... ORDER BY), when the sort order is safe to
+ *	produce remotely.  This mirrors postgres_fdw's
+ *	add_paths_with_pathkeys_for_rel(): ORDER BY is pushed down by giving a
+ *	based-path the query's pathkeys -- not by creating an ordered upper
+ *	relation path -- so GetForeignPlan keeps treating the path as an ordinary
+ *	base/join scan (SELECT list from attrs_used / join target).
+ */
+static void
+duckdb_add_presorted_foreign_paths(PlannerInfo *root, RelOptInfo *rel)
+{
+	DuckDBFdwRelationInfo *fpinfo;
+	List	   *pathkeys;
+	double		rows;
+	int			width;
+	Cost		startup_cost;
+	Cost		total_cost;
+
+	if (rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_JOINREL)
+		return;
+
+	fpinfo = (DuckDBFdwRelationInfo *) rel->fdw_private;
+	if (fpinfo == NULL || !fpinfo->pushdown_safe)
+		return;
+
+	/*
+	 * The planner will only make use of the remote sort if it can push down
+	 * all of the query's pathkeys; a prefix is not useful (see
+	 * get_useful_pathkeys_for_relation in postgres_fdw.c).
+	 */
+	pathkeys = root->query_pathkeys;
+	if (pathkeys == NIL)
+		return;
+
+	/*
+	 * A locally-filtered scan cannot be pre-sorted remotely: DuckDB would
+	 * sort rows that the local Filter is going to discard anyway (wrong
+	 * total rows below the LIMIT if any, and wasted work otherwise).
+	 */
+	if (fpinfo->local_conds != NIL)
+		return;
+
+	if (!duckdb_pathkeys_all_foreign(root, rel, pathkeys))
+		return;
+
+	duckdb_estimate_path_cost_size(root, rel, NIL, pathkeys, NULL,
+								   &rows, &width, &startup_cost, &total_cost);
+
+	if (IS_SIMPLE_REL(rel))
+	{
+		add_path(rel, (Path *)
+				 create_foreignscan_path(root, rel,
+										  NULL, /* target: use reltarget */
+										  rows,
+										  startup_cost,
+										  total_cost,
+										  list_copy(pathkeys),
+										  rel->lateral_relids,
+										  NULL, /* no fdw_outerpath */
+										  NIL,  /* no fdw_restrictinfo */
+										  NIL)); /* no fdw_private */
+	}
+	else
+	{
+		add_path(rel, (Path *)
+				 create_foreign_join_path(root, rel,
+										   NULL, /* target: use reltarget */
+										   rows,
+										   startup_cost,
+										   total_cost,
+										   list_copy(pathkeys),
+										   rel->lateral_relids,
+										   NULL, /* no fdw_outerpath */
+										   fpinfo->joinclauses,
+										   NIL)); /* no fdw_private */
+	}
 }
 
 static ForeignScan *
@@ -615,7 +765,32 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
         deparse_tlist = duckdb_build_tlist_to_deparse(baserel);
     }
 
-    duckdb_deparse_select_stmt_for_rel(&sql, root, baserel, deparse_tlist, fpinfo->remote_conds, NIL, false, false, false, &retrieved_attrs, &params_list);
+    {
+        /*
+         * ORDER BY / LIMIT pushdown (see duckdbGetForeignPaths and
+         * duckdbGetForeignUpperPaths) travels on the ForeignPath: the expected
+         * sort order is carried in the path's pathkeys, and the final path
+         * additionally stashes [has_final_sort, has_limit] in fdw_private.
+         * Read them back so the deparser can emit ORDER BY / LIMIT clauses.
+         * The plain base-scan path has pathkeys == NIL and no fdw_private, so
+         * this is a no-op for existing scans.
+         */
+        List   *pathkeys = best_path->path.pathkeys;
+        bool    has_final_sort = false;
+        bool    has_limit = false;
+
+        if (best_path->fdw_private != NULL &&
+            list_length(best_path->fdw_private) >= 2)
+        {
+            has_final_sort = boolVal(list_nth(best_path->fdw_private, 0));
+            has_limit = boolVal(list_nth(best_path->fdw_private, 1));
+        }
+
+        duckdb_deparse_select_stmt_for_rel(&sql, root, baserel, deparse_tlist,
+                                           fpinfo->remote_conds, pathkeys,
+                                           has_final_sort, has_limit, false,
+                                           &retrieved_attrs, &params_list);
+    }
 
     fdw_private = list_make4(makeString(sql.data),
                              retrieved_attrs,
@@ -863,6 +1038,59 @@ duckdbReScanForeignScan(ForeignScanState *node)
 	pfree(oldstate);
 }
 
+/*
+ * duckdb_add_foreign_ordered_paths
+ *  Record FDW metadata on the ordered upper relation so that a downstream
+ *  FINAL relation (ORDER BY ... LIMIT) can inherit the foreign context and
+ *  the planner keeps calling our GetForeignUpperPaths for FINAL.
+ *
+ * For a base/join input relation no path is created here: the ORDER BY is
+ * already pushed down by the pre-sorted base path (carrying
+ * root->query_pathkeys).  This mirrors postgres_fdw's
+ * add_foreign_ordered_paths() early-return for base/join inputs.
+ */
+static void
+duckdb_add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
+                                 RelOptInfo *ordered_rel)
+{
+    DuckDBFdwRelationInfo *ifpinfo =
+        (DuckDBFdwRelationInfo *) input_rel->fdw_private;
+    DuckDBFdwRelationInfo *fpinfo =
+        (DuckDBFdwRelationInfo *) palloc0(sizeof(DuckDBFdwRelationInfo));
+
+    if (root->parse->hasTargetSRFs)
+    {
+        pfree(fpinfo);
+        return;
+    }
+
+    fpinfo->outerrel = input_rel;
+    fpinfo->foreigntableid = ifpinfo->foreigntableid;
+    fpinfo->server = ifpinfo->server;
+    fpinfo->user = ifpinfo->user;
+    fpinfo->stage = UPPERREL_ORDERED;
+
+    /*
+     * The ORDER BY is only pushable when every query pathkey is safe to
+     * produce remotely (see duckdb_add_presorted_foreign_paths, which
+     * creates the pre-sorted base path on exactly this condition).  Record
+     * that so the FINAL handler can tell a real remote sort from a local
+     * one and not emit an ORDER BY that DuckDB cannot honour.
+     */
+    fpinfo->pushdown_safe =
+        ifpinfo->pushdown_safe &&
+        root->query_pathkeys != NIL &&
+        duckdb_pathkeys_all_foreign(root, input_rel, root->query_pathkeys);
+
+    ordered_rel->fdw_private = fpinfo;
+
+    /*
+     * Base / join input: the ORDER BY is handled by the pre-sorted base
+     * path, so nothing more to do (the FINAL handler will unwrap back to
+     * the base relation and push the LIMIT on top of it).
+     */
+}
+
 static void
 duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
                             RelOptInfo *input_rel, RelOptInfo *output_rel,
@@ -874,8 +1102,189 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
         !((DuckDBFdwRelationInfo *) input_rel->fdw_private)->pushdown_safe)
         return;
 
-    if (stage != UPPERREL_GROUP_AGG)
+    if (stage != UPPERREL_GROUP_AGG && stage != UPPERREL_ORDERED &&
+        stage != UPPERREL_FINAL)
         return;
+
+    /* Skip duplicate calls. */
+    if (output_rel->fdw_private != NULL)
+        return;
+
+    if (stage == UPPERREL_ORDERED)
+    {
+        duckdb_add_foreign_ordered_paths(root, input_rel, output_rel);
+        return;
+    }
+
+    /*
+     * Only the FINAL stage is new; GROUP_AGG keeps the (HAVING-aware) path
+     * construction below, unchanged.
+     */
+    if (stage == UPPERREL_FINAL)
+    {
+        Query		*parse = root->parse;
+        FinalPathExtraData *final_extra = (FinalPathExtraData *) extra;
+        DuckDBFdwRelationInfo *ifpinfo =
+            (DuckDBFdwRelationInfo *) input_rel->fdw_private;
+        List	   *pathkeys = NIL;
+        bool		has_final_sort = false;
+        double		rows;
+        int			width;
+        Cost		startup_cost;
+        Cost		total_cost;
+        List	   *fdw_private;
+
+        /*
+         * If the input is the ORDERED upper relation (ORDER BY ... LIMIT),
+         * the ORDER BY itself has already been pushed down by the
+         * pre-sorted base path.  Unwrap back to the underlying base/join
+         * relation and push the LIMIT on top of it, re-marking the sort as
+         * a final sort.  Same design as add_foreign_final_paths() in
+         * postgres_fdw.c.
+         */
+        if (input_rel->reloptkind == RELOPT_UPPER_REL &&
+            ifpinfo->stage == UPPERREL_ORDERED)
+        {
+            input_rel = ifpinfo->outerrel;
+            ifpinfo = (DuckDBFdwRelationInfo *) input_rel->fdw_private;
+            has_final_sort = true;
+            pathkeys = list_copy(root->sort_pathkeys);
+        }
+
+        /*
+         * Currently we only push down LIMIT/OFFSET for a plain (base or
+         * join) scan.  A remote "GROUP BY ... LIMIT" (input_rel being a
+         * grouping relation) is a separate, less common case that would
+         * require re-deriving the aggregate scan's attrs_used; leave it to
+         * the planner's local Limit-over-GroupAggregate until needed.
+         */
+        if (input_rel->reloptkind != RELOPT_BASEREL &&
+            input_rel->reloptkind != RELOPT_JOINREL)
+            return;
+
+        if (parse->commandType != CMD_SELECT || parse->hasTargetSRFs)
+            return;
+
+        /* The LIMIT itself must be required and simple (no WITH TIES). */
+        if (!final_extra->limit_needed)
+            return;
+        if (parse->limitOption == LIMIT_OPTION_WITH_TIES)
+            return;
+
+        /*
+         * A locally-filtered scan cannot be LIMITed remotely: DuckDB would
+         * count rows that the local Filter discards anyway, returning a
+         * different (wrong) number of rows.
+         */
+        if (ifpinfo->local_conds != NIL)
+            return;
+
+        /* The LIMIT / OFFSET expressions must be pushable. */
+        if (parse->limitCount &&
+            !duckdb_is_foreign_expr(root, input_rel, (Expr *) parse->limitCount))
+            return;
+        if (parse->limitOffset &&
+            !duckdb_is_foreign_expr(root, input_rel, (Expr *) parse->limitOffset))
+            return;
+
+        /*
+         * If the query also has an ORDER BY, the remote scan must produce it
+         * in order; that requires every sort pathkey to be safe to ship.
+         * When it is, the final path carries the sort pathkeys and the
+         * deparser emits ORDER BY; otherwise the planner sorts locally.
+         */
+        if (root->sort_pathkeys)
+        {
+            if (!duckdb_pathkeys_all_foreign(root, input_rel,
+                                             root->sort_pathkeys))
+                return;
+            pathkeys = list_copy(root->sort_pathkeys);
+            has_final_sort = true;
+        }
+
+        /*
+         * Build the final relation's fpinfo.  The path's parent is the input
+         * (base) relation, not the final rel, so GetForeignPlan deparses it
+         * as an ordinary base scan (SELECT list from attrs_used -- which
+         * already includes the ORDER BY columns).  See
+         * add_foreign_final_paths() in postgres_fdw.c for the same design.
+         */
+        fpinfo = (DuckDBFdwRelationInfo *) palloc0(sizeof(DuckDBFdwRelationInfo));
+        fpinfo->outerrel = input_rel;
+        fpinfo->foreigntableid = ifpinfo->foreigntableid;
+        fpinfo->server = ifpinfo->server;
+        fpinfo->user = ifpinfo->user;
+        fpinfo->pushdown_safe = true;
+        output_rel->fdw_private = fpinfo;
+
+        /*
+         * Cost.  The remote engine applies the ORDER BY / LIMIT *during* the
+         * scan, so it produces and transfers only the requested window of
+         * rows.  A local Limit-over-scan instead pulls the full result set
+         * back from DuckDB and only then discards rows, so the remote final
+         * path is cheaper on the data-transfer portion.
+         *
+         * We scale the (total - startup) data portion down to the window
+         * fraction (like adjust_limit_rows_costs does for a local Limit) and
+         * then apply a small "remote early-termination" discount.  Without
+         * the discount the two paths cost exactly the same and the planner's
+         * add_path tie-break keeps the local Limit (it is added first, see
+         * grouping_planner in planner.c); the discount makes the remote
+         * LIMIT win precisely when there is a real transfer benefit, and
+         * tie (local Limit kept) when the data portion is negligible.
+         */
+        duckdb_estimate_path_cost_size(root, input_rel, NIL, pathkeys, NULL,
+                                       &rows, &width, &startup_cost, &total_cost);
+        {
+            double window_frac = 1.0;
+            Cost     full_data = total_cost - startup_cost;
+            double   new_rows;
+
+            if (final_extra->count_est > 0 && rows > 0)
+                window_frac = (double) final_extra->count_est / rows;
+            if (window_frac < 0.0)
+                window_frac = 0.0;
+            if (window_frac > 1.0)
+                window_frac = 1.0;
+
+            /* transfer only the window, at a discount for remote early-stop */
+            total_cost = startup_cost + full_data * window_frac * 0.75;
+            new_rows = final_extra->count_est > 0
+                       ? (double) final_extra->count_est
+                       : rows * window_frac;
+            if (new_rows < 1.0)
+                new_rows = 1.0;
+            rows = new_rows;
+        }
+
+        /*
+         * fdw_private for the ForeignPath: [has_final_sort, has_limit].
+         * duckdbGetForeignPlan reads these back when it deparses the query.
+         */
+        fdw_private = list_make2(makeBoolean(has_final_sort),
+                                 makeBoolean(final_extra->limit_needed));
+
+        /*
+         * create_foreign_upper_path() sets path->parent = input_rel (the
+         * base relation) even though the path is added to output_rel (the
+         * FINAL upper relation).  GetForeignPlan then deparses it as an
+         * ordinary base scan (SELECT list from attrs_used, which already
+         * includes the ORDER BY columns).  Same design as
+         * add_foreign_final_paths() in postgres_fdw.c.
+         */
+        add_path(output_rel, (Path *)
+                 create_foreign_upper_path(root,
+                                           input_rel,
+                                           root->upper_targets[UPPERREL_FINAL],
+                                           rows,
+                                           startup_cost,
+                                           total_cost,
+                                           pathkeys,
+                                           NULL, /* no fdw_outerpath */
+                                           NIL,  /* no fdw_restrictinfo */
+                                           fdw_private));
+        return;
+    }
 
     GroupPathExtraData *grouping_extra = (GroupPathExtraData *) extra;
     DuckDBFdwRelationInfo *ofpinfo =

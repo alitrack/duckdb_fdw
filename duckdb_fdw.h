@@ -60,6 +60,12 @@ typedef struct DuckDBFdwRelationInfo
     List       *grouped_tlist;
     bool        is_tlist_func_pushdown;
     List       *final_remote_exprs;
+    /*
+     * Upper-relation stage this fpinfo belongs to.  Set for the grouped
+     * relation created by GetForeignUpperPaths; the deparser uses it to
+     * decide how to build the SELECT list (explicit tlist vs. grouped_tlist).
+     */
+    UpperRelationKind stage;
 } DuckDBFdwRelationInfo;
 
 typedef struct DuckDBFdwExecState
