@@ -1024,6 +1024,28 @@ duckdbIterateForeignScan(ForeignScanState *node)
 	    int         i;
 
     ExecClearTuple(slot);
+    /*
+     * Zero the slot so that EVERY attribute is in a consistent state before
+     * we fill only the retrieved ones.  ExecClearTuple does not reset
+     * tts_values[]/tts_isnull[] for a virtual slot, so non-retrieved columns
+     * would otherwise keep a stale (often zero) by-reference Datum while the
+     * tts_nvalid = natts below claims them valid.  When the ForeignScan is
+     * not the top node (e.g. a local Group/Sort sits on top and materializes
+     * the full tuple via heap_form_tuple), that stale pointer is dereferenced
+     * as VARSIZE(NULL) and segfaults.  Initializing all columns to NULL makes
+     * the slot fully consistent: retrieved columns get real values, the rest
+     * are legitimately NULL (no lower plan node needs their value).
+     */
+    {
+        int natts = slot->tts_tupleDescriptor->natts;
+        int     a;
+        for (a = 0; a < natts; a++)
+        {
+            slot->tts_values[a] = 0;
+            slot->tts_isnull[a] = true;
+        }
+    }
+
 
 	    if (festate->use_chunk_scan)
 		{
