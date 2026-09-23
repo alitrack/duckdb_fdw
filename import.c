@@ -142,6 +142,109 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
     }
     else
     {
+
+        /*
+         * Quack proxy mode.
+         *
+         * The ATTACHed 'remote' database does not reflect its tables into the
+         * local duckdb_tables() catalog (it shows up in duckdb_databases() with
+         * type 'quack', but duckdb_tables() returns no rows for it, and the
+         * remote side exposes no information_schema / catalog table functions).
+         * So table auto-enumeration is not possible there; the caller must give
+         * an explicit LIMIT TO (table, ...) list.  Each listed table is then
+         * referenced as remote.<schema>.<table>.
+         *
+         * This used to fall through to the generic path below, which built
+         * "FROM remote.duckdb_tables()" -- both illegal syntax (a table function
+         * cannot take a catalog prefix) and useless (the rows are never there),
+         * so IMPORT FOREIGN SCHEMA always failed on Quack servers.
+         */
+        if (is_quack)
+        {
+            ListCell   *lc;
+
+            if (stmt->table_list == NIL)
+                ereport(ERROR,
+                        (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                         errmsg("duckdb_fdw: cannot auto-enumerate tables on a Quack (quack_host) server"),
+                         errhint("Quack proxy databases do not expose their tables through "
+                                 "duckdb_tables(); list them explicitly, e.g.\n"
+                                 "  IMPORT FOREIGN SCHEMA \"main\" LIMIT TO (t1, t2) "
+                                 "FROM SERVER my_quack_srv INTO public;")));
+
+            foreach(lc, stmt->table_list)
+            {
+                RangeVar       *rv = (RangeVar *) lfirst(lc);
+                StringInfoData  ddl;
+                StringInfoData  desc_query;
+                duckdb_result   col_res;
+                char           *remote_table_name;
+                char           *remote_table_pg_lit;
+                bool            first_col = true;
+
+                if (rv->relname == NULL)
+                    continue;
+
+                if (!duckdb_fdw_is_safe_sql_fragment(rv->relname))
+                    ereport(ERROR,
+                            (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+                             errmsg("table name \"%s\" contains unsafe SQL fragment", rv->relname)));
+
+                initStringInfo(&ddl);
+                initStringInfo(&desc_query);
+
+                appendStringInfo(&ddl, "CREATE FOREIGN TABLE %s.%s (",
+                                 quote_identifier(stmt->local_schema),
+                                 quote_identifier(rv->relname));
+
+                appendStringInfo(&desc_query, "DESCRIBE SELECT * FROM remote.%s.%s",
+                                 quote_identifier(stmt->remote_schema),
+                                 quote_identifier(rv->relname));
+
+                if (duckdb_query(conn, desc_query.data, &col_res) == DuckDBError)
+                    ereport(ERROR,
+                            (errcode(ERRCODE_FDW_ERROR),
+                             errmsg("DuckDB: %s",
+                                    duckdb_fdw_redact_secret_text(
+                                        duckdb_result_error(&col_res) ?
+                                        duckdb_result_error(&col_res) : "error")),
+                             errdetail("while describing remote table \"%s\"", rv->relname)));
+
+                for (idx_t j = 0; j < duckdb_row_count(&col_res); j++)
+                {
+                    char *cname = duckdb_value_varchar(&col_res, 0, j);
+                    char *ctype = duckdb_value_varchar(&col_res, 1, j);
+
+                    if (!first_col)
+                        appendStringInfoString(&ddl, ", ");
+                    appendStringInfo(&ddl, "%s %s", quote_identifier(cname),
+                                     duckdb_map_type_name(ctype));
+                    first_col = false;
+
+                    duckdb_free(cname);
+                    duckdb_free(ctype);
+                }
+                duckdb_destroy_result(&col_res);
+
+                remote_table_name = psprintf("remote.%s.%s",
+                                             stmt->remote_schema, rv->relname);
+                remote_table_pg_lit = quote_literal_cstr(remote_table_name);
+                pfree(remote_table_name);
+                appendStringInfo(&ddl, ") SERVER %s OPTIONS (table %s)",
+                                 quote_identifier(server->servername),
+                                 remote_table_pg_lit);
+                pfree(remote_table_pg_lit);
+
+                if (SPI_execute(ddl.data, false, 0) != SPI_OK_UTILITY)
+                    elog(ERROR, "Failed to create foreign table: %s", ddl.data);
+
+                pfree(ddl.data);
+                pfree(desc_query.data);
+            }
+
+            SPI_finish();
+            return NIL;
+        }
         /*
          * 1. Get list of tables first.
          * 2. For each table, use DESCRIBE to get accurate column info.

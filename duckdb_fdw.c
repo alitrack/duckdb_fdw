@@ -1653,6 +1653,28 @@ duckdbGetForeignModifyBatchSize(ResultRelInfo *rinfo)
 {
 	DuckDBFdwExecState *festate = (DuckDBFdwExecState *) rinfo->ri_FdwState;
 
+	/*
+	 * Disable batching when we have to use RETURNING, there are any
+	 * BEFORE/AFTER ROW INSERT triggers on the foreign table, or there are any
+	 * WITH CHECK OPTION constraints from parent views.
+	 *
+	 * The executor projects RETURNING and bumps the command-tag counter only
+	 * on the per-row (ri_BatchSize == 1) path.  If we advertise a batch size
+	 * greater than 1 while a RETURNING clause is present, the insert is
+	 * diverted into the batch-accumulation path in nodeModifyTable.c, where a
+	 * single row never reaches the 2048-row flush threshold: ExecForeignInsert
+	 * is therefore never called, RETURNING projects no rows and the tag reports
+	 * "INSERT 0 0" even though the row is eventually flushed at shutdown.  This
+	 * mirrors postgres_fdw's postgresGetForeignModifyBatchSize(), which returns
+	 * 1 in the same situations.
+	 */
+	if (rinfo->ri_projectReturning != NULL ||
+		rinfo->ri_WithCheckOptions != NIL ||
+		(rinfo->ri_TrigDesc &&
+		 (rinfo->ri_TrigDesc->trig_insert_before_row ||
+		  rinfo->ri_TrigDesc->trig_insert_after_row)))
+		return 1;
+
 	if (festate && festate->use_appender)
 		return 2048;
 	return 1;
@@ -1925,8 +1947,16 @@ Datum duckdb_execute(PG_FUNCTION_ARGS) {
         elog(ERROR, "duckdb_fdw: statement rejected on force_readonly server %s",
              servername);
 
+    /*
+     * Run the statement and surface any DuckDB error to the caller.
+     * duckdb_do_sql_command() reports at the given elog level; passing ERROR
+     * (not LOG) is what makes a failed DDL/DML raise here instead of being
+     * logged server-side while the client still sees success.  Without this
+     * a mistyped statement (e.g. a CTAS with an explicit column definition,
+     * which DuckDB rejects) silently no-ops and the caller cannot tell.
+     */
     duckdb_connection conn = duckdb_get_connection(server, false);
-    duckdb_do_sql_command(conn, query, LOG);
+    duckdb_do_sql_command(conn, query, ERROR);
     PG_RETURN_VOID();
 }
 
