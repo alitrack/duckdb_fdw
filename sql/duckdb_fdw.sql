@@ -4,6 +4,7 @@ CREATE EXTENSION duckdb_fdw;
 -- Create Server
 CREATE SERVER duckdb_test FOREIGN DATA WRAPPER duckdb_fdw
 OPTIONS (database '/tmp/duckdb_fdw_regress_main.db');
+CREATE USER MAPPING FOR PUBLIC SERVER duckdb_test;
 
 -- Admin helper privilege defaults
 CREATE ROLE duckdb_fdw_unprivileged;
@@ -80,6 +81,7 @@ SELECT * FROM test_types WHERE i = 1;
 -- Server option refresh should use a new DuckDB database after ALTER SERVER
 CREATE SERVER duckdb_switch FOREIGN DATA WRAPPER duckdb_fdw
 OPTIONS (database 'duckdb_switch_one.db');
+CREATE USER MAPPING FOR PUBLIC SERVER duckdb_switch;
 SELECT duckdb_execute('duckdb_switch', 'DROP TABLE IF EXISTS switch_test');
 SELECT duckdb_execute('duckdb_switch', 'CREATE TABLE switch_test (i INTEGER)');
 SELECT duckdb_execute('duckdb_switch', 'INSERT INTO switch_test VALUES (1)');

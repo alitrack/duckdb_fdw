@@ -3,6 +3,7 @@ CREATE EXTENSION duckdb_fdw;
 -- Create Server
 CREATE SERVER duckdb_test FOREIGN DATA WRAPPER duckdb_fdw
 OPTIONS (database '/tmp/duckdb_fdw_regress_main.db');
+CREATE USER MAPPING FOR PUBLIC SERVER duckdb_test;
 -- Admin helper privilege defaults
 CREATE ROLE duckdb_fdw_unprivileged;
 SELECT has_function_privilege('duckdb_fdw_unprivileged', 'duckdb_execute(name,text)', 'EXECUTE');
@@ -146,6 +147,7 @@ SELECT * FROM test_types WHERE i = 1;
 -- Server option refresh should use a new DuckDB database after ALTER SERVER
 CREATE SERVER duckdb_switch FOREIGN DATA WRAPPER duckdb_fdw
 OPTIONS (database 'duckdb_switch_one.db');
+CREATE USER MAPPING FOR PUBLIC SERVER duckdb_switch;
 SELECT duckdb_execute('duckdb_switch', 'DROP TABLE IF EXISTS switch_test');
  duckdb_execute 
 ----------------
@@ -194,14 +196,17 @@ SELECT * FROM switch_test_ft;
 
 DROP FOREIGN TABLE switch_test_ft;
 DROP SERVER duckdb_switch CASCADE;
+NOTICE:  drop cascades to user mapping for public on server duckdb_switch
 -- Unsupported write paths remain explicit
 UPDATE test_types SET s = 'changed' WHERE i = 1;
-ERROR:  UPDATE not supported
+ERROR:  foreign table "test_types" does not allow updates
 DELETE FROM test_types WHERE i = 1;
-ERROR:  DELETE not supported
+ERROR:  foreign table "test_types" does not allow deletes
 -- Cleanup
 DROP FOREIGN TABLE test_types;
 DROP ROLE duckdb_fdw_unprivileged;
 DROP SERVER duckdb_test CASCADE;
-NOTICE:  drop cascades to foreign table test_v2
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to user mapping for public on server duckdb_test
+drop cascades to foreign table test_v2
 DROP EXTENSION duckdb_fdw;
