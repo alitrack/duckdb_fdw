@@ -1977,13 +1977,20 @@ duckdb_deparse_target_list(StringInfo buf,
 					if (!bms_is_member(ci - FirstLowInvalidHeapAttributeNumber,
 										   attrs_used))
 						continue;
-					/* 白名单与 duckdb_can_use_chunk_scan 完全一致: */
-					/* 列不在其中即强制文本回退, 需 CAST 保护。 */
+				/*
+				 * 触发条件必须与"运行时是否走文本回退"一致: 回退由
+				 * duckdb_chunk_types_ok 按输出列的 DuckDB 类型判定。
+				 * deparse 会把不在下方 no-cast 清单里的列(INT2/FLOAT4/
+				 * TEXT 之外的复杂类型)包成 CAST(... AS VARCHAR), 输出
+				 * 即 VARCHAR, 整行必走文本回退。因此白名单必须等于
+				 * "原生输出且定宽"的 PG 类型集合:
+				 * BOOL/INT4/INT8/FLOAT8/DATE/TIMESTAMP/TIMESTAMPTZ。
+				 * (INT2/FLOAT4 虽属定宽, 但 deparse 会 CAST 成 VARCHAR,
+				 *  同样迫使回退, 必须在此触发 TZ 保护。)
+				 */
 					if (ca->atttypid == BOOLOID ||
-						ca->atttypid == INT2OID ||
 						ca->atttypid == INT4OID ||
 						ca->atttypid == INT8OID ||
-						ca->atttypid == FLOAT4OID ||
 						ca->atttypid == FLOAT8OID ||
 						ca->atttypid == DATEOID ||
 						ca->atttypid == TIMESTAMPOID ||
