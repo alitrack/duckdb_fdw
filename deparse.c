@@ -1922,6 +1922,7 @@ duckdb_deparse_target_list(StringInfo buf,
 	for (i = 1; i <= tupdesc->natts; i++)
 	{
 		Form_pg_attribute attr = TupleDescAttr(tupdesc, i - 1);
+		bool		need_tz_cast;
 
 		/* Ignore dropped attributes. */
 		if (attr->attisdropped)
@@ -1952,27 +1953,67 @@ duckdb_deparse_target_list(StringInfo buf,
              * to serialize them to text. Otherwise duckdb_value_varchar may return NULL.
              * We do this by wrapping the column in a CAST(... AS VARCHAR).
              */
-			                        if (attr->atttypid == INT4OID || 
-			                attr->atttypid == INT8OID || 
-			                attr->atttypid == FLOAT8OID || 
-			                attr->atttypid == BOOLOID ||
-			                attr->atttypid == TEXTOID ||
-			                attr->atttypid == VARCHAROID ||
-			                attr->atttypid == DATEOID ||
-			                attr->atttypid == TIMESTAMPOID ||
-			                attr->atttypid == TIMESTAMPTZOID)
-			            {
-			                /* Safe types: Fetch directly */
-			                            duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
-			            }
-			
-            else
-            {
-                /* Complex types (Array, Vector): Force serialization */
-                appendStringInfoString(buf, "CAST(");
-                duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
-                appendStringInfoString(buf, " AS VARCHAR)");
-            }
+			/*
+			 * 文本回退保护: 本次投影若含复杂列(数组/vector/json/decimal/
+			 * blob 等不在定宽 safe list 的类型), 整行改走文本回退路径
+			 * (duckdb_value_to_pg)。DuckDB C API 对原生 TIMESTAMPTZ 列的
+			 * value 访问器不可用(value_varchar 返回 NULL / value_timestamp
+			 * 返回 0), 会静默读成 epoch(2000-01-01)。此时把 TIMESTAMPTZ
+			 * 列 CAST AS VARCHAR, 由 PG 的 timestamptz_in 解析字符串;
+			 * 纯定宽行不受影响, 仍走 chunk 快速路径。
+			 */
+			need_tz_cast = false;
+			if (!is_concat && !check_null)
+			{
+				int			ci;
+				Form_pg_attribute ca;
+
+				for (ci = 1; ci <= tupdesc->natts; ci++)
+				{
+					ca = TupleDescAttr(tupdesc, ci - 1);
+
+					if (ca->attisdropped)
+						continue;
+					if (!bms_is_member(ci - FirstLowInvalidHeapAttributeNumber,
+										   attrs_used))
+						continue;
+					/* 白名单与 duckdb_can_use_chunk_scan 完全一致: */
+					/* 列不在其中即强制文本回退, 需 CAST 保护。 */
+					if (ca->atttypid == BOOLOID ||
+						ca->atttypid == INT2OID ||
+						ca->atttypid == INT4OID ||
+						ca->atttypid == INT8OID ||
+						ca->atttypid == FLOAT4OID ||
+						ca->atttypid == FLOAT8OID ||
+						ca->atttypid == DATEOID ||
+						ca->atttypid == TIMESTAMPOID ||
+						ca->atttypid == TIMESTAMPTZOID)
+						continue;
+					need_tz_cast = true;
+					break;
+				}
+			}
+
+			if ((attr->atttypid == INT4OID ||
+				attr->atttypid == INT8OID ||
+				attr->atttypid == FLOAT8OID ||
+				attr->atttypid == BOOLOID ||
+				attr->atttypid == TEXTOID ||
+				attr->atttypid == VARCHAROID ||
+				attr->atttypid == DATEOID ||
+				attr->atttypid == TIMESTAMPOID) ||
+				(attr->atttypid == TIMESTAMPTZOID && !need_tz_cast))
+			{
+				/* 定宽/文本列: C API 可直接读 */
+				duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
+			}
+			else
+			{
+				/* 复杂列, 或文本回退下的 TIMESTAMPTZ: 强制序列化 */
+				appendStringInfoString(buf, "CAST(");
+				duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
+				appendStringInfoString(buf, " AS VARCHAR)");
+			}
 
 			if (check_null)
 				appendStringInfoString(buf, " IS NOT NULL) ");

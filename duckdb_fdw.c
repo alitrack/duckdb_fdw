@@ -359,6 +359,49 @@ duckdb_can_use_chunk_scan(TupleDesc tupdesc, List *retrieved_attrs)
 	return true;
 }
 
+/*
+ * 把 PG 数组输出格式({1,2} / {"a","b"}) 转成 DuckDB list 字面量
+ * ([1,2] / ['a','b'])。DuckDB 的 list 列不认花括号, 只认方括号;
+ * 字符串元素用单引号。已知边界: 元素含引号、多维数组不在覆盖范围
+ * (读路径同样只处理一层花括号), 遇到时原样透传, 由 DuckDB 报错。
+ */
+static char *
+duckdb_pg_array_to_duckdb_list(const char *in)
+{
+	char		*out;
+	size_t		len = strlen(in);
+	char		*p;
+	char		*q;
+	bool		bad = false;
+
+	out = palloc(len + 1);
+	p = in;
+	q = out;
+	while (*p)
+	{
+		if (*p == '{')
+			*q++ = '[';
+		else if (*p == '}')
+			*q++ = ']';
+		else if (*p == '"')
+		{
+			if (q != out && q[-1] != '[' && q[-1] != ',')
+				bad = true;
+			*q++ = '\'';
+		}
+		else
+			*q++ = *p;
+		p++;
+	}
+	*q = '\0';
+	if (bad)
+	{
+		pfree(out);
+		return NULL;
+	}
+	return out;
+}
+
 static bool
 duckdb_append_slot_row(DuckDBFdwExecState *festate, TupleTableSlot *slot)
 {
@@ -417,7 +460,24 @@ duckdb_append_slot_row(DuckDBFdwExecState *festate, TupleTableSlot *slot)
 
 						getTypeOutputInfo(typ, &typoutput, &typisvarlena);
 						outstr = OidOutputFunctionCall(typoutput, val);
-						state = duckdb_append_varchar(festate->appender, outstr);
+						if (get_element_type(typ) != InvalidOid)
+						{
+							/*
+							 * 数组列: PG 输出 {..}, DuckDB list 要 [..];
+							 * 转换失败(元素含引号/多维)则原样透传让 DuckDB 报错。
+							 */
+							char *lst = duckdb_pg_array_to_duckdb_list(outstr);
+
+							if (lst)
+							{
+								state = duckdb_append_varchar(festate->appender, lst);
+								pfree(lst);
+							}
+							else
+								state = duckdb_append_varchar(festate->appender, outstr);
+						}
+						else
+							state = duckdb_append_varchar(festate->appender, outstr);
 						pfree(outstr);
 					}
 					break;
