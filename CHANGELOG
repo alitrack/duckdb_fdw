@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Bug Fixes
+- `duckdb_execute` now surfaces DuckDB errors to the client (elog ERROR instead of LOG); failed DDL/DML no longer looks like a silent success.
+- `INSERT ... RETURNING` on foreign tables now returns the inserted rows: `GetForeignModifyBatchSize` reports batch size 1 when a RETURNING clause, WITH CHECK OPTION, or before/after row trigger is present (previously the batch path swallowed the single-row insert, so RETURNING returned 0 rows while the data landed). Mirrors postgres_fdw.
+- Quack (`quack_host`) mode `IMPORT FOREIGN SCHEMA` no longer fails with `Table Function with name duckdb_tables does not exist`: Quack servers get a dedicated branch that creates foreign tables per explicitly listed table (`LIMIT TO (...)`) via `DESCRIBE remote.<schema>.<table>`; without `LIMIT TO` it raises a clear feature-not-supported error with a hint (Quack remotes do not expose their tables in `duckdb_tables()`).
+- `examples/19_readonly_and_returning.sql`: `force_readonly` option value quoted (`'true'`), the bare boolean was a syntax error under `ON_ERROR_STOP`.
+
 ### Maintenance
 - Restricted admin-like helper execution by default and aligned public capability claims with the code-backed chunk-result read path.
 - Added transaction-scoped connection cache cleanup and routed foreign path creation through a shared costing helper.
