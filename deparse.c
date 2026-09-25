@@ -858,9 +858,23 @@ duckdb_foreign_expr_walker(Node *node,
 				/* Output is always boolean and so noncollatable. */
 				collation = InvalidOid;
 				state = FDW_COLLATE_NONE;
-			}
-			break;
-		case T_List:
+				}
+				break;
+				case T_SubPlan:
+				case T_SubLink:
+				{
+					/*
+					 * A subquery (IN/EXISTS/(SELECT ...) that the planner turned
+					 * into a SubPlan, or a raw SubLink) executes via PARAM_EXEC
+					 * params.  The fetch loop's nested-param handling is incomplete
+					 * for SubPlans, which segfaults the backend (observed on
+					 * TPC-H Q11 HAVING subquery and Q20 nested IN).  Refuse pushdown
+					 * of any expression containing a subquery so the planner runs it
+					 * locally.
+					 */
+					return false;
+				}
+				case T_List:
 			{
 				List	   *l = (List *) node;
 				ListCell   *lc;
