@@ -508,6 +508,17 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
     ofpinfo = (DuckDBFdwRelationInfo *) outerrel->fdw_private;
     ifpinfo = (DuckDBFdwRelationInfo *) innerrel->fdw_private;
 
+    /*
+     * Only join types the deparser can render (duckdb_get_jointype_name).
+     * JOIN_SEMI / JOIN_ANTI etc. would elog(ERROR) mid-deparse; refuse
+     * pushdown for them so the planner falls back to a local join.
+     */
+    if (jointype != JOIN_INNER && jointype != JOIN_LEFT &&
+        jointype != JOIN_RIGHT && jointype != JOIN_FULL)
+    {
+        return false;
+    }
+
     if (ofpinfo == NULL || ifpinfo == NULL)
     {
         return false;
@@ -545,6 +556,18 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
     }
 
     /*
+     * Per-table predicates attached to a member baserel (e.g.
+     * WHERE lineitem.l_shipdate > ...) are classified into that
+     * baserel's own remote_conds/local_conds by duckdbGetForeignRelSize.
+     * They are NOT part of joinrel->baserestrictinfo (the planner
+     * attaches single-table quals to the base relation, not the join).
+     * We must merge them into the join's fpinfo so the deparser emits
+     * them in the remote SQL's WHERE clause.  (Without this, the join
+     * pushdown silently dropped all per-table predicates and returned
+     * the unfiltered join row count.)
+     */
+
+    /*
      * Create a DuckDBFdwRelationInfo for the join relation.
      */
     fpinfo = (DuckDBFdwRelationInfo *) palloc0(sizeof(DuckDBFdwRelationInfo));
@@ -573,6 +596,27 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
      */
     duckdb_classify_conditions(root, joinrel, joinrel->baserestrictinfo,
                                 &fpinfo->remote_conds, &fpinfo->local_conds);
+
+    /*
+     * Merge the per-table predicates that were already classified on the
+     * member baserels.  The planner attaches single-table quals (e.g.
+     * WHERE lineitem.l_shipdate > ...) to each base relation, not to the
+     * join, so joinrel->baserestrictinfo does not contain them.  Without
+     * this merge the join pushdown drops them silently and returns the
+     * unfiltered join (count(*) FROM lineitem, orders WHERE
+     * l_orderkey = o_orderkey AND l_shipdate > '1995-01-01' used to return
+     * 6001215 rows instead of 3424196).  Vars in these clauses carry
+     * baserel varnos that are already part of joinrel->relids, so
+     * duckdb_is_foreign_expr_full() above validates them against the join.
+     */
+    fpinfo->remote_conds = list_concat(fpinfo->remote_conds,
+                                       ofpinfo->remote_conds);
+    fpinfo->remote_conds = list_concat(fpinfo->remote_conds,
+                                       ifpinfo->remote_conds);
+    fpinfo->local_conds = list_concat(fpinfo->local_conds,
+                                      ofpinfo->local_conds);
+    fpinfo->local_conds = list_concat(fpinfo->local_conds,
+                                      ifpinfo->local_conds);
 
     /*
      * Set up glob_cxt for checking pushability of the join relation.
