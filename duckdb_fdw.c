@@ -1546,6 +1546,23 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
         return;
 
     /*
+     * BUG: a GROUP BY whose query carries a subquery (initplan / SubPlan)
+     * combined with aggregation pushdown can segfault the backend while
+     * executing the remote aggregate (TPC-H Q11 / Q20: a scalar-subquery
+     * HAVING plus a multiplication aggregate).  By the time this upper path
+     * is built the subquery has usually been turned into an initplan and the
+     * HAVING into a reference to its output Param, so checking the HAVING for
+     * a SubLink does not see it; the reliable signal is that the query has
+     * initplans.  Until the execution layer handles a pushed-down remote
+     * aggregate alongside an initplan, keep such aggregations local: PG's
+     * (local GroupAggregate over the ForeignScan, the initplan
+     * run separately, HAVING over the local aggregate) is correct.  Queries
+     * without subqueries (TPC-H Q3/Q10 join aggregates) are unaffected.
+     */
+    if (root->parse->hasSubLinks)
+        return;
+
+    /*
      * Classify the HAVING quals: those evaluable remotely go to
      * fpinfo->remote_conds (deparse emits them as the HAVING clause), the
      * rest to fpinfo->local_conds (re-applied by the local plan).  Without
