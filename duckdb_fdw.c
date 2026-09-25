@@ -519,6 +519,36 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
         return false;
     }
 
+    /*
+     * Refuse join pushdown when the query's GROUP BY has a non-plain-column
+     * key (an expression such as extract()/date_part()).  Such a key cannot
+     * be pushed (it is outside the deparse function whitelist), so a local
+     * GroupAggregate is left above the join ForeignScan.  That scan, however,
+     * emits the plan targetlist (the grouping target) rather than the base
+     * column inside the expression, so core setrefs fails with "variable not
+     * found in subplan target list" (TPC-H Q7/Q8/Q9; any 2-table join plus an
+     * expression GROUP BY).  A local join makes each member scan emit its full
+     * base columns, which is correct.  Joins whose group keys are all plain
+     * base columns (Q3/Q5/Q10) still push their aggregation as a single remote
+     * scan and are unaffected.
+     */
+    if (root->parse->groupClause != NIL)
+    {
+        ListCell   *gc;
+
+        foreach (gc, root->parse->groupClause)
+        {
+            SortGroupClause *sgc = lfirst_node(SortGroupClause, gc);
+            TargetEntry  *tle = get_sortgroupclause_tle(sgc,
+                                                        root->parse->targetList);
+
+            if (tle == NULL || !IsA(tle->expr, Var))
+                return false;
+            if (((Var *) tle->expr)->varattno <= 0)
+                return false;
+        }
+    }
+
     if (ofpinfo == NULL || ifpinfo == NULL)
     {
         return false;
