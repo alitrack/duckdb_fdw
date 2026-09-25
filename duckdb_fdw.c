@@ -619,6 +619,24 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
                                       ifpinfo->local_conds);
 
     /*
+     * BUG: a query carrying a subquery (SubLink) whose plan pushes a JOIN
+     * down segfaults the backend when the subplan is executed (TPC-H Q20: a
+     * correlated IN subquery over a pushed-down supplier/nation join).  The
+     * deparser's T_SubLink/T_SubPlan guard refuses to deparse such a *condi-
+     * tion*, but the crash is in subplan execution over the join result, not
+     * in condition deparse.  Until that execution path is safe, do not push
+     * the join down when the query has subqueries: PG then joins the foreign
+     * tables locally (each side still pushed as a single ForeignScan) and
+     * runs the subplan over that, which is correct.  Query-less sublinks are
+     * rare in the join-pushdown path, so this only affects those queries.
+     */
+    if (root->parse->hasSubLinks)
+    {
+        pfree(fpinfo);
+        return false;
+    }
+
+    /*
      * Set up glob_cxt for checking pushability of the join relation.
      */
     {
