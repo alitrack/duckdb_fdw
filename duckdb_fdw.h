@@ -92,6 +92,7 @@ typedef struct DuckDBFdwExecState
     int64_t     current_chunk_row_idx;
     int64_t     current_chunk_row_count;
     bool        is_started;
+    bool        query_executed;	/* false until the remote query has actually run (deferred for param-carrying scans) */
 
     /* Appender state */
     duckdb_appender appender;

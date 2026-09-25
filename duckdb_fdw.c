@@ -29,6 +29,7 @@
 #include "executor/executor.h"
 #include "commands/explain.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/makefuncs.h"
 
 PG_MODULE_MAGIC;
 
@@ -509,12 +510,22 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
     ifpinfo = (DuckDBFdwRelationInfo *) innerrel->fdw_private;
 
     /*
-     * Only join types the deparser can render (duckdb_get_jointype_name).
-     * JOIN_SEMI / JOIN_ANTI etc. would elog(ERROR) mid-deparse; refuse
-     * pushdown for them so the planner falls back to a local join.
+     * Only INNER joins can be pushed down.  Outer joins (LEFT/RIGHT/FULL)
+     * are NOT pushed: a nullable-side condition (e.g. the
+     * `o_comment not like ...` part of Q13's LEFT JOIN ON clause) can be
+     * attached by the planner to the nullable member's baserestrictinfo,
+     * and the member-predicate merge below moves it into the join's
+     * remote_conds, so the deparser emits it as a post-join WHERE.  That
+     * WHERE filters out the NULL rows the outer join must keep, silently
+     * dropping a result group (TPC-H Q13: 41 groups instead of the
+     * correct 42 — the c_count=0 group of 50,004 customers with no
+     * matching orders).  The reference implementation postgres_fdw runs
+     * such a join locally (verified: it plans Q13 as a local Merge Left
+     * Join over two Foreign Scans, one per side, each with its own
+     * correct WHERE).  Refusing the pushdown gives the same shape: a
+     * local join over per-member ForeignScans — always correct.
      */
-    if (jointype != JOIN_INNER && jointype != JOIN_LEFT &&
-        jointype != JOIN_RIGHT && jointype != JOIN_FULL)
+    if (jointype != JOIN_INNER)
     {
         return false;
     }
@@ -958,6 +969,32 @@ duckdb_add_presorted_foreign_paths(PlannerInfo *root, RelOptInfo *rel)
 	}
 }
 
+/*
+ * Build a plan targetlist from the relation's reltarget (the columns the
+ * planner needs from this relation), mirroring core build_path_tlist()
+ * (createplan.c) for the non-parameterized case.  Used when the planner
+ * hands us a NULL targetlist (CP_IGNORE_TLIST) for a pushed-down join.
+ */
+static List *
+duckdb_build_reltarget_tlist(RelOptInfo *rel)
+{
+    List       *tlist = NIL;
+    int         resno = 1;
+    ListCell   *lc;
+
+    foreach (lc, rel->reltarget->exprs)
+    {
+        Expr       *expr = (Expr *) lfirst(lc);
+        TargetEntry *tle = makeTargetEntry(expr, resno, NULL, false);
+
+        if (rel->reltarget->sortgrouprefs)
+            tle->ressortgroupref = rel->reltarget->sortgrouprefs[resno - 1];
+        tlist = lappend(tlist, tle);
+        resno++;
+    }
+    return tlist;
+}
+
 static ForeignScan *
 duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
                      ForeignPath *best_path, List *tlist, List *scan_clauses,
@@ -985,6 +1022,24 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
     {
         /* Join pushdown */
         scanrelid = 0;
+        /*
+         * The planner may hand us a NULL targetlist: when a
+         * projection-capable parent sits above the join it plans us with
+         * CP_IGNORE_TLIST (create_plan passes tlist=NULL).  A join scan
+         * (scanrelid=0) with a NULL plan targetlist breaks core setrefs —
+         * the upper node maps its columns against the scan's (empty)
+         * targetlist and fails with "variable not found in subplan target
+         * list" (TPC-H Q2: 3-table join where the projection above the
+         * pushed-down join selects a column set that makes the planner
+         * insert that projection).  Build the targetlist from the join's
+         * reltarget — exactly the columns build_path_tlist() would derive
+         * from the path, and the non-NULL fdw_scan_tlist that
+         * postgres_fdw guarantees via build_tlist_to_deparse().  Queries
+         * whose join is not under a projection get a non-NULL tlist and
+         * are unaffected.
+         */
+        if (tlist == NIL)
+            tlist = duckdb_build_reltarget_tlist(baserel);
         deparse_tlist = tlist;
         /* Use the OID of the first foreign table involved in the join as a dummy */
         rel_oid = fpinfo->server->serverid;
@@ -1067,6 +1122,35 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 	if (node->ss.ps.ps_ExprContext == NULL)
 		ExecAssignExprContext(node->ss.ps.state, &node->ss.ps);
 
+	/*
+	 * Defer the remote query when the scan carries remote parameters
+	 * (fsplan->fdw_exprs != NIL, i.e. the Remote SQL uses ? placeholders).
+	 * Such a parameter is usually fed by a PARAM_EXEC that the planner
+	 * turns a non-correlated scalar subquery into an InitPlan, and the
+	 * InitPlan only runs AFTER this scan's BeginForeignScan (the whole
+	 * plan tree is initialized in ExecutorStart before any InitPlan is
+	 * executed).  Binding the parameter in Begin therefore reads a
+	 * not-yet-set slot: a numeric SubPlan param is still the Datum 0, so
+	 * the text-fallback path calls numeric_out(0) and dereferences NULL
+	 * (segfault, TPC-H Q20's "0.5 * sum(ps_availqty)").  postgres_fdw
+	 * avoids this by executing the remote query on first ExecProc, by
+	 * which time the InitPlan has run and the PARAM_EXEC slot holds its
+	 * value.  Do the same: run the query on first Iterate instead.
+	 * Scans without remote parameters (all other TPC-H queries) keep
+	 * executing here in Begin exactly as before.
+	 */
+	if (fsplan->fdw_exprs != NIL)
+	{
+		festate->query_executed = false;
+		festate->current_chunk_idx = 0;
+		festate->current_chunk_row_idx = 0;
+		festate->global_row_idx = 0;
+		festate->use_chunk_scan = false;
+		festate->current_chunk_row_count = 0;
+		festate->is_started = true;
+		return;
+	}
+
 	duckdb_execute_query(festate, node, fsplan);
 
 	festate->current_chunk_idx = 0;
@@ -1089,6 +1173,7 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 		festate->use_chunk_scan = duckdb_fetch_next_chunk(festate);
 	if (!festate->use_chunk_scan)
 		festate->current_chunk_row_count = duckdb_row_count(&festate->res);
+	festate->query_executed = true;
 	festate->is_started = true;
 }
 
@@ -1156,6 +1241,36 @@ duckdbIterateForeignScan(ForeignScanState *node)
 	    TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
 	    ListCell   *lc;
 	    int         i;
+
+    /*
+     * Deferred execution for parameter-carrying scans (see
+     * duckdbBeginForeignScan): by the time the parent node first
+     * iterates us, the InitPlans feeding our remote parameters have
+     * already been executed, so binding them now reads their real values
+     * instead of the not-yet-set slots that would segfault in Begin.
+     * This also performs the result/chunk setup that the deferred Begin
+     * skipped.
+     */
+    if (!festate->query_executed)
+	{
+		ForeignScan *fsplan = (ForeignScan *) node->ss.ps.plan;
+
+		duckdb_execute_query(festate, node, fsplan);
+		festate->current_chunk_idx = 0;
+		festate->current_chunk_row_idx = 0;
+		festate->global_row_idx = 0;
+		festate->use_chunk_scan = duckdb_can_use_chunk_scan(festate->tupdesc,
+				festate->retrieved_attrs);
+		if (festate->use_chunk_scan)
+			festate->use_chunk_scan =
+				duckdb_chunk_types_ok(&festate->res, festate->tupdesc,
+						festate->retrieved_attrs);
+		if (festate->use_chunk_scan)
+			festate->use_chunk_scan = duckdb_fetch_next_chunk(festate);
+		if (!festate->use_chunk_scan)
+			festate->current_chunk_row_count = duckdb_row_count(&festate->res);
+		festate->query_executed = true;
+	}
 
     ExecClearTuple(slot);
     /*
@@ -1287,7 +1402,8 @@ duckdbEndForeignScan(ForeignScanState *node)
 	    {
 			if (festate->current_chunk)
 				duckdb_destroy_data_chunk(&festate->current_chunk);
-	        duckdb_destroy_result(&festate->res);
+			if (festate->query_executed)
+				duckdb_destroy_result(&festate->res);
 			if (festate->use_prepared_stmt && festate->prepared_stmt)
 				duckdb_destroy_prepare(&festate->prepared_stmt);
 	    }
