@@ -115,6 +115,7 @@ extern duckdb_opt * duckdb_get_options(Oid foreigntableid);
 extern char *duckdb_fdw_quote_literal(const char *input);
 extern char *duckdb_fdw_quote_identifier(const char *input);
 extern bool duckdb_fdw_is_valid_identifier(const char *input);
+extern bool duckdb_fdw_is_table_function_call(const char *input);
 extern bool duckdb_fdw_is_safe_sql_fragment(const char *input);
 extern char *duckdb_fdw_redact_secret_text(const char *input);
 extern char *duckdb_fdw_trim_token(char *token);

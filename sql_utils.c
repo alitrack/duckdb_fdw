@@ -77,6 +77,96 @@ duckdb_fdw_is_valid_identifier(const char *input)
 	return true;
 }
 
+/*
+ * duckdb_fdw_is_table_function_call
+ *		True when `input` is a *balanced* table-function call: a valid
+ *		identifier followed by '(' and at least one string-literal argument,
+ *		with all parens closed and no statement separators.  Used by the
+ *		deparser to decide whether a `table` option already spells a remote
+ *		table function (e.g. read_json / read_csv_auto / read_parquet) and
+ *		can be passed through verbatim instead of being treated as a
+ *		qualified relation name (which would reject the path's dots/parens
+ *		as "unsafe characters").  Strictly additive: a non-matching input
+ *		falls through to the existing relation-name handling unchanged.
+ */
+bool
+duckdb_fdw_is_table_function_call(const char *input)
+{
+	const char *p;
+	const char *open;
+	int			depth = 0;
+	bool			in_str = false;
+
+	if (!input || input[0] == '\0')
+		return false;
+
+	p = input;
+	if (!(isalpha((unsigned char) p[0]) || p[0] == '_'))
+		return false;
+	while (isalnum((unsigned char) p[0]) || p[0] == '_')
+		p++;
+
+	/* skip any single-space padding before '(' */
+	while (*p == ' ' || *p == '\t')
+		p++;
+
+	if (*p != '(')
+		return false;
+
+	/* require at least one string-literal argument (a path) inside */
+	open = p;
+	for (; *open; open++)
+	{
+		if (*open == ')' || *open == ';')
+			return false;		/* closed or chained before any literal */
+		if (*open == '\'')
+			break;				/* found a literal argument */
+	}
+	if (*open != '\'')
+		return false;
+
+	/* walk the whole fragment checking paren balance and a clean close.
+	 * Path characters (slashes, dots, dashes) are fine OUTSIDE strings too;
+	 * only statement separators, identifier quotes and comment sequences
+	 * (outside string literals) disqualify. */
+	p = input;
+	while (*p)
+	{
+		if (in_str)
+		{
+			if (*p == '\'')
+			{
+				if (p[1] == '\'')
+					p++;			/* escaped quote */
+				else
+					in_str = false;
+			}
+			p++;
+			continue;
+		}
+		if (*p == '\'')
+		{
+			in_str = true;
+			p++;
+			continue;
+		}
+		if (*p == ';' || *p == '"')
+			return false;
+		if ((*p == '/' && p[1] == '*') || (*p == '-' && p[1] == '-'))
+			return false;		/* comment outside string literal */
+		if (*p == '(')
+			depth++;
+		else if (*p == ')')
+		{
+			depth--;
+			if (depth < 0)
+				return false;
+		}
+		p++;
+	}
+	return !in_str && depth == 0;
+}
+
 bool
 duckdb_fdw_is_safe_sql_fragment(const char *input)
 {

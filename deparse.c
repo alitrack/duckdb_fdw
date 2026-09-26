@@ -212,6 +212,15 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
         /* Already a function call, pass as is */
         appendStringInfo(buf, "%s", relname);
     }
+    else if (duckdb_fdw_is_table_function_call(relname))
+    {
+        /* A balanced table-function call (e.g. read_json / read_csv_auto /
+         * read_blob) whose name is not in the substring list above. The
+         * string already passed duckdb_fdw_is_safe_sql_fragment() and is a
+         * well-formed call, so emit it verbatim instead of failing to parse
+         * it as a qualified relation name. */
+        appendStringInfo(buf, "%s", relname);
+    }
 	else if (strchr(relname, '.') != NULL || strchr(relname, '"') != NULL)
 	{
 		/*
