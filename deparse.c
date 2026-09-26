@@ -1484,16 +1484,18 @@ duckdb_deparse_explicit_target_list(List *tlist, List **retrieved_attrs,
 		if (i > 0)
 			appendStringInfoString(buf, ", ");
 
-        /* 
-         * Safety: For complex types (Arrays, Vectors), we must force DuckDB 
-         * to serialize them to text.
+        /*
+         * Safety: For complex types (Arrays, Vectors) we must force DuckDB
+         * to serialize them to text. TEXT/VARCHAR take the CAST branch too:
+         * identity for a real VARCHAR (the cast is optimized away), but
+         * forces serialization when a custom DuckDB type (e.g. spatial
+         * point_2d) is bridged to PG text/varchar -- a bare read segfaults
+         * in duckdb_value_varchar.
          */
-        if (expr_type == INT4OID || 
-            expr_type == INT8OID || 
-            expr_type == FLOAT8OID || 
-            expr_type == BOOLOID ||
-            expr_type == TEXTOID ||
-            expr_type == VARCHAROID)
+        if (expr_type == INT4OID ||
+            expr_type == INT8OID ||
+            expr_type == FLOAT8OID ||
+            expr_type == BOOLOID)
         {
             duckdb_deparse_expr((Expr *) tle->expr, context);
         }
@@ -2019,13 +2021,11 @@ duckdb_deparse_target_list(StringInfo buf,
 				attr->atttypid == INT8OID ||
 				attr->atttypid == FLOAT8OID ||
 				attr->atttypid == BOOLOID ||
-				attr->atttypid == TEXTOID ||
-				attr->atttypid == VARCHAROID ||
 				attr->atttypid == DATEOID ||
 				attr->atttypid == TIMESTAMPOID) ||
 				(attr->atttypid == TIMESTAMPTZOID && !need_tz_cast))
 			{
-				/* 定宽/文本列: C API 可直接读 */
+				/* 定宽列: C API 可直接读 */
 				duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
 			}
 			else
