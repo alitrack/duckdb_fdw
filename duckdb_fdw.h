@@ -99,6 +99,22 @@ typedef struct DuckDBFdwExecState
     int64_t     batch_row_count;
     char       *table_name;
     bool        use_appender;
+
+    /*
+     * B3: name-based column mapping for the INSERT path.  write_colmap[i]
+     * is the index of the DuckDB column that receives the value of PG
+     * tuple position i (-1: dropped column / no DuckDB counterpart).  The
+     * DuckDB side layout (names + types, in DuckDB column order) is kept
+     * in duckcolnames/duckcoltypes; the appender must fill columns in
+     * DuckDB order, which is why the DuckDB layout is stored here.  All
+     * fields stay NULL/0 until duckdb_fetch_write_schema() has run; a
+     * table-function target keeps the legacy physical-order behavior.
+     */
+    bool        write_name_mapped;
+    int         nduckcols;
+    int        *write_colmap;
+    char      **duckcolnames;
+    char      **duckcoltypes;
 } DuckDBFdwExecState;
 
 /* Exported functions */
@@ -126,6 +142,7 @@ extern bool duckdb_fdw_sql_is_readonly(const char *sql);
 /* Internal functions */
 extern void duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level);
 extern duckdb_connection duckdb_get_connection(ForeignServer *server, bool truncatable);
+extern void duckdb_ensure_remote_xact(duckdb_connection conn);
 
 /* Helper to get cleaned C-String for BuildTupleFromCStrings */
 extern char *duckdb_extract_as_cstring(duckdb_result *res, int col, uint64_t row, Oid pgtyp);

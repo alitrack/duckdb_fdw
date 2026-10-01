@@ -120,7 +120,11 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 			remote_schema_lit = duckdb_fdw_quote_literal(stmt->remote_schema);
 	        appendStringInfo(&query, "DESCRIBE SELECT * FROM read_parquet(%s)", remote_schema_lit);
 	        if (duckdb_query(conn, query.data, &res) == DuckDBError)
-	            elog(ERROR, "DuckDB: %s", duckdb_result_error(&res));
+	        {
+	            const char *errtxt = pstrdup(duckdb_result_error(&res));
+	            duckdb_destroy_result(&res);
+	            elog(ERROR, "DuckDB: %s", errtxt);
+	        }
 
         for (idx_t i = 0; i < duckdb_row_count(&res); i++)
         {
@@ -202,13 +206,17 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
                                  quote_identifier(rv->relname));
 
                 if (duckdb_query(conn, desc_query.data, &col_res) == DuckDBError)
+                {
+                    /* error text is owned by the result: copy it before destroying */
+                    char *redacted = duckdb_fdw_redact_secret_text(
+                        duckdb_result_error(&col_res) ?
+                        duckdb_result_error(&col_res) : "error");
+                    duckdb_destroy_result(&col_res);
                     ereport(ERROR,
                             (errcode(ERRCODE_FDW_ERROR),
-                             errmsg("DuckDB: %s",
-                                    duckdb_fdw_redact_secret_text(
-                                        duckdb_result_error(&col_res) ?
-                                        duckdb_result_error(&col_res) : "error")),
+                             errmsg("DuckDB: %s", redacted),
                              errdetail("while describing remote table \"%s\"", rv->relname)));
+                }
 
                 for (idx_t j = 0; j < duckdb_row_count(&col_res); j++)
                 {
@@ -264,7 +272,11 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 			pfree(remote_schema_lit);
 
         if (duckdb_query(conn, query.data, &tables_res) == DuckDBError)
-            elog(ERROR, "DuckDB: %s", duckdb_result_error(&tables_res));
+        {
+            const char *errtxt = pstrdup(duckdb_result_error(&tables_res));
+            duckdb_destroy_result(&tables_res);
+            elog(ERROR, "DuckDB: %s", errtxt);
+        }
 
         for (idx_t i = 0; i < duckdb_row_count(&tables_res); i++)
         {
@@ -313,6 +325,22 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
                     elog(ERROR, "Failed to create foreign table: %s", ddl.data);
 
                 duckdb_destroy_result(&col_res);
+            }
+            else
+            {
+                /*
+                 * DESCRIBE failed: report the error and destroy the result
+                 * (the error text is owned by the result, so copy it first).
+                 * Previously the failure was swallowed silently, leaking the
+                 * C-heap duckdb_result.
+                 */
+                const char *errtxt = pstrdup(duckdb_result_error(&col_res));
+                duckdb_destroy_result(&col_res);
+                ereport(ERROR,
+                        (errcode(ERRCODE_FDW_ERROR),
+                         errmsg("DuckDB: %s", errtxt),
+                         errdetail("while describing remote table \"%s.%s.%s\"",
+                                   dbname, schname, tname)));
             }
 
             duckdb_free(dbname); duckdb_free(schname); duckdb_free(tname);

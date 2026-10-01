@@ -714,7 +714,6 @@ duckdb_foreign_expr_walker(Node *node,
 			}
 			break;
 		case T_OpExpr:
-		case T_NullIfExpr:
 			{
 				char	   *cur_opname = NULL;
 				OpExpr	   *oe = (OpExpr *) node;
@@ -753,6 +752,18 @@ duckdb_foreign_expr_walker(Node *node,
 				}
 
 				/*
+				 * Regex match operators (~ !~ ~* !~*) cannot be pushed down
+				 * to DuckDB: PostgreSQL implements them with POSIX semantics
+				 * (partial match) while DuckDB's regex operators differ in
+				 * collation and matching rules, so evaluate them locally.
+				 */
+				if (strcmp(cur_opname, "~") == 0 || strcmp(cur_opname, "!~") == 0 ||
+					strcmp(cur_opname, "~*") == 0 || strcmp(cur_opname, "!~*") == 0)
+				{
+					return false;
+				}
+
+				/*
 				 * Recurse to input subexpressions.
 				 */
 				if (!duckdb_foreign_expr_walker((Node *) oe->args,
@@ -780,9 +791,85 @@ duckdb_foreign_expr_walker(Node *node,
 					state = FDW_COLLATE_UNSAFE;
 			}
 			break;
+		case T_NullIfExpr:
+			{
+				/*
+				 * In modern PostgreSQL NullIfExpr is a typedef of OpExpr
+				 * (nodes/primnodes.h), so the node is shaped like an OpExpr
+				 * but carries no operator OID of its own: looking up its
+				 * (InvalidOid) opno in the OPEROID cache would be wrong, and
+				 * the opname blacklist does not apply.  The deparser renders
+				 * it as NULLIF()/CASE, which DuckDB evaluates natively, so it
+				 * is safe to push down provided its arguments are pushable
+				 * and its input collation derives from a foreign Var, i.e.
+				 * the OpExpr rule minus the operator checks (same approach as
+				 * postgres_fdw's NullIfExpr branch).
+				 */
+				OpExpr	   *oe = (OpExpr *) node;
+
+				/*
+				 * Recurse to input subexpressions.
+				 */
+				if (!duckdb_foreign_expr_walker((Node *) oe->args,
+												glob_cxt, &inner_cxt))
+					return false;
+
+				/*
+				 * If the operator's input collation is not derived from a
+				 * foreign Var, it can't be sent to remote.
+				 */
+				if (oe->inputcollid == InvalidOid)
+					 /* OK, inputs are all noncollatable */ ;
+				else if (inner_cxt.state != FDW_COLLATE_SAFE ||
+						 oe->inputcollid != inner_cxt.collation)
+					return false;
+
+				/* Result-collation handling is same as for functions */
+				collation = oe->opcollid;
+				if (collation == InvalidOid)
+					state = FDW_COLLATE_NONE;
+				else if (inner_cxt.state == FDW_COLLATE_SAFE &&
+						 collation == inner_cxt.collation)
+					state = FDW_COLLATE_SAFE;
+				else
+					state = FDW_COLLATE_UNSAFE;
+			}
+			break;
 		case T_ScalarArrayOpExpr:
 			{
 				ScalarArrayOpExpr *oe = (ScalarArrayOpExpr *) node;
+
+				/*
+				 * The deparser parses a constant RHS array char-by-char from
+				 * its text output: it strips braces/quotes and treats every
+				 * comma as an element separator.  That is only correct for pure
+				 * numeric arrays; a text/varchar (or any other) array whose
+				 * elements contain commas, quotes, or NULLs would be re-parsed
+				 * with changed meaning.  So reject any constant array whose
+				 * element type is not one of the plain integer types (and
+				 * OID) and let the expression be evaluated locally.
+				 */
+				{
+					Node	   *rhs = (Node *) lsecond(oe->args);
+
+					if (IsA(rhs, Const))
+					{
+						Const	   *c = (Const *) rhs;
+						Oid			elt = get_element_type(c->consttype);
+
+						/*
+						 * get_element_type() fails (InvalidOid) for non-array
+						 * or domain array types; those are not safe for the
+						 * char-by-char deparse either, so they fall through to
+						 * the local-evaluation path.
+						 */
+						if (elt != INT2OID &&
+							elt != INT4OID &&
+							elt != INT8OID &&
+							elt != OIDOID)
+							return false;
+					}
+				}
 
 				/*
 				 * Again, only built-in operators can be sent to remote.

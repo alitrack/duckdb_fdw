@@ -17,6 +17,7 @@
 #include "commands/defrem.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "catalog/pg_attribute.h"
 
 /*
  * Option context structure
@@ -67,6 +68,12 @@ static struct DuckDBFdwOption valid_options[] =
 	/* Table options */
 	{"table", ForeignTableRelationId},
     {"read_parquet", ForeignTableRelationId}, /* Path to parquet file */
+
+	/* B3: per-column DuckDB-side name used by the write path (and the
+	 * deparser); without accepting it here the validator rejected the option */
+	{"column_name", ForeignTableRelationId},
+	/* column-level options are validated against pg_attribute */
+	{"column_name", AttributeRelationId},
 	
     /* Execution options */
 	{"use_remote_estimate", ForeignServerRelationId},

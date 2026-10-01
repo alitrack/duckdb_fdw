@@ -16,6 +16,19 @@ typedef struct ConnCacheKey
 								 * are tracked separately so that a server
 								 * re-created without the option (or vice
 								 * versa) does not reuse a stale connection */
+	/*
+	 * User-mapping identity of the user that will use this connection (B2).
+	 * Connection setup (S3 credentials, Quack tokens, ATTACHed catalogs) is
+	 * driven by the *current user's* user mapping, so two users with
+	 * different mappings for the same server must never share a cached
+	 * connection: the first opener's secrets/catalogs would leak into the
+	 * second user's session (and vice versa).  We key on the user mapping
+	 * row's OID; users without an explicit mapping (server owners / super
+	 * users get a synthetic mapping with InvalidOid, all other users get
+	 * NULL back from GetUserMapping) fall back to the user OID, which is
+	 * stable while the session identity is stable (SET ROLE switches both).
+	 */
+	Oid			umid;
 } ConnCacheKey;
 
 typedef struct ConnCacheEntry
@@ -23,6 +36,16 @@ typedef struct ConnCacheEntry
 	ConnCacheKey key;
 	duckdb_database db;
 	duckdb_connection conn;
+	/*
+	 * B5: true while this connection holds an explicit DuckDB
+	 * transaction open (BEGIN issued by the write path, not yet
+	 * settled by the xact callback).  DML is therefore atomic with
+	 * the top-level PG transaction: the callback COMMITs the remote
+	 * transaction on XACT_EVENT_COMMIT and ROLLBACKs it on ABORT.
+	 * Read-only work (scans, probes) never triggers a BEGIN and
+	 * keeps DuckDB's autocommit semantics.
+	 */
+	bool			in_xact;
 } ConnCacheEntry;
 
 static HTAB *ConnectionHash = NULL;
@@ -45,6 +68,7 @@ duckdb_cleanup_connection_cache(void)
 			duckdb_disconnect(&entry->conn);
 			entry->conn = NULL;
 		}
+		entry->in_xact = false;
 		if (entry->db)
 		{
 			duckdb_close(&entry->db);
@@ -56,19 +80,53 @@ duckdb_cleanup_connection_cache(void)
 static void
 duckdb_connection_xact_callback(XactEvent event, void *arg)
 {
+	bool			commit;
+	bool			abort;
+
 	(void) arg;
 
-	switch (event)
+	commit = (event == XACT_EVENT_COMMIT ||
+			event == XACT_EVENT_PARALLEL_COMMIT);
+	abort = (event == XACT_EVENT_ABORT ||
+			event == XACT_EVENT_PARALLEL_ABORT ||
+			event == XACT_EVENT_PREPARE);
+
+	if (!commit && !abort)
+		return;
+
+	/*
+	 * B5: settle the remote transaction BEFORE tearing the
+	 * connection down.  Order matters: the COMMIT/ROLLBACK must run
+	 * on the still-connected handle, and a failing settle must not
+	 * crash the callback, so it is logged as a WARNING only.  (The
+	 * XACT_EVENT_PREPARE case is treated as an abort: DuckDB cannot
+	 * participate in two-phase commits, so a remote transaction that
+	 * outlived this backend would be lost anyway.)
+	 */
+	if (ConnectionHash != NULL)
 	{
-		case XACT_EVENT_COMMIT:
-		case XACT_EVENT_ABORT:
-		case XACT_EVENT_PARALLEL_COMMIT:
-		case XACT_EVENT_PARALLEL_ABORT:
-			duckdb_cleanup_connection_cache();
-			break;
-		default:
-			break;
+		HASH_SEQ_STATUS scan;
+		ConnCacheEntry *entry;
+
+		/*
+		 * Visit every entry.  The loop always runs to completion, so
+		 * dynahash's hash_seq_search() performs the end-of-scan cleanup
+		 * itself; an extra hash_seq_term() would error out.
+		 */
+		hash_seq_init(&scan, ConnectionHash);
+		while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)) != NULL)
+		{
+			if (entry->in_xact && entry->conn)
+			{
+				duckdb_do_sql_command(entry->conn,
+					commit ? "COMMIT" : "ROLLBACK", WARNING);
+			}
+			entry->in_xact = false;
+		}
+
 	}
+
+	duckdb_cleanup_connection_cache();
 }
 
 static void
@@ -80,14 +138,34 @@ duckdb_connection_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 	(void) parentSubid;
 
 	/*
-	 * On subtransaction abort, clean up cached connections so that any
-	 * in-progress DuckDB state from the aborted subtransaction is discarded.
-	 * This is conservative (clears all connections, not just those created
-	 * in the subtransaction) but avoids leaking DuckDB internal state into
-	 * the parent transaction.
+	 * DELIBERATE NO-OP (B1): cached connections must NOT be torn down on
+	 * subtransaction abort/commit.  A cached connection is owned by the
+	 * top-level transaction: it is opened lazily by duckdb_get_connection()
+	 * and released only by duckdb_connection_xact_callback() on
+	 * XACT_EVENT_COMMIT / ABORT / PARALLEL_COMMIT / PARALLEL_ABORT.  Active
+	 * plan states (ForeignScan / modify festates) hold the connection handle
+	 * in festate->conn for the whole top-level transaction, so aborting any
+	 * nested subtransaction used to close connections the parent transaction
+	 * was still using -- leaving every such festate->conn dangling.  The next
+	 * remote call on the dead handle then crashed the backend (and worse, the
+	 * connection is re-fetched from the *new* cache entry while old plan
+	 * states keep using the old one).
+	 *
+	 * Trade-off: DuckDB-side side effects performed inside an aborted
+	 * subtransaction are not rolled back individually.  That window is tiny
+	 * in this FDW: read-only queries keep no connection state, and DML is
+	 * wrapped in one explicit BEGIN/COMMIT/ROLLBACK tied to the *top-level*
+	 * transaction (see duckdb_fdw.c / B5), so a subtransaction abort cannot
+	 * leave a half-committed remote transaction behind.  Concretely, if the
+	 * parent transaction later COMMITs, rows written by the aborted
+	 * subtransaction remain on the remote side (the remote transaction is
+	 * all-or-nothing); if the parent ABORTs, they are rolled back along
+	 * with everything else.  A stale-but-open connection is far less
+	 * dangerous than a dangling one.
+	 *
+	 * The callback is kept registered (and empty) so the top-level xact
+	 * callback remains the single owner of connection lifetime.
 	 */
-	if (event == SUBXACT_EVENT_ABORT_SUB)
-		duckdb_cleanup_connection_cache();
 }
 
 static void
@@ -432,8 +510,21 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 		ConnectionXactCallbackRegistered = true;
 	}
 
+	MemSet(&key, 0, sizeof(key));
 	key.serverid = server->serverid;
 	key.force_readonly = duckdb_fdw_server_is_readonly(server);
+	{
+		UserMapping *um = GetUserMapping(GetUserId(), server->serverid);
+
+		/*
+		 * No mapping (or synthetic owner/superuser mapping): fall back to
+		 * the user OID (see ConnCacheKey comment).  The umid is part of the
+		 * hash key, so a connection created under one user/mapping is never
+		 * handed to a different user/mapping.
+		 */
+		key.umid = (um != NULL && OidIsValid(um->umid)) ? um->umid
+													 : GetUserId();
+	}
 	entry = hash_search(ConnectionHash, &key, HASH_ENTER, &found);
 
 	if (!found)
@@ -447,6 +538,7 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 		 */
 		entry->db = NULL;
 		entry->conn = NULL;
+		entry->in_xact = false;
 	}
 
 	if (!found || entry->conn == NULL)
@@ -519,6 +611,7 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
         /* Quack proxy mode: load Quack extension and ATTACH remote */
         if (quack_host)
         {
+            char *full;
             char *host_lit;
             char *attach_sql;
 
@@ -535,9 +628,18 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
                 pfree(secret_sql);
             }
 
-            host_lit = duckdb_fdw_quote_literal(quack_host);
-            attach_sql = psprintf("ATTACH 'quack:%s' AS remote;", quack_host);
+            /*
+             * The ATTACH path must be a quoted literal: the host may contain
+             * quotes or other characters with special meaning in SQL, so a
+             * raw psprintf("ATTACH 'quack:%s'") would allow statement injection
+             * from a user-supplied FDW option.
+             */
+            full = psprintf("quack:%s", quack_host);
+            host_lit = duckdb_fdw_quote_literal(full);
+            attach_sql = psprintf("ATTACH %s AS remote;", host_lit);
             duckdb_do_sql_command(entry->conn, attach_sql, ERROR);
+            pfree(full);
+            pfree(host_lit);
             pfree(attach_sql);
         }
 	}
@@ -567,4 +669,53 @@ duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level)
 		return;
 	}
 	duckdb_destroy_result(&res);
+}
+
+/*
+ * B5: make sure the connection is inside a remote (DuckDB) transaction
+ * before DML is sent on it.  The first writer of the top-level PG
+ * transaction issues a plain BEGIN (later writers on the same cached
+ * connection reuse it); the xact callback settles it (COMMIT/ROLLBACK)
+ * when the PG transaction ends, which is what makes INSERTs through the
+ * FDW atomic with the surrounding PG transaction.  Connections used only
+ * for reads (or duckdb_execute probes) are never started and keep
+ * DuckDB's autocommit behavior.
+ *
+ * If BEGIN itself fails the command is aborted: executing DML in
+ * autocommit would break the atomicity guarantee.
+ */
+void
+duckdb_ensure_remote_xact(duckdb_connection conn)
+{
+	HASH_SEQ_STATUS scan;
+	ConnCacheEntry *entry = NULL;
+	bool			found = false;
+
+	if (conn == NULL || ConnectionHash == NULL)
+		return;
+
+	/* locate the cache entry that owns this connection */
+	hash_seq_init(&scan, ConnectionHash);
+	while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)) != NULL)
+	{
+		if (entry->conn == conn)
+		{
+			found = true;
+			break;
+		}
+	}
+	/*
+	 * dynahash: hash_seq_search() cleans up by itself once the scan
+	 * completes; only a scan abandoned early (found == true) still
+	 * needs an explicit hash_seq_term().
+	 */
+	if (found)
+		hash_seq_term(&scan);
+
+
+	if (!found || entry->in_xact)
+		return;
+
+	duckdb_do_sql_command(entry->conn, "BEGIN", ERROR);
+	entry->in_xact = true;
 }
