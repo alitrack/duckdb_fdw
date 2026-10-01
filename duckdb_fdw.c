@@ -31,6 +31,7 @@
 #include "commands/explain.h"
 #if PG_VERSION_NUM >= 180000
 #include "commands/explain_state.h" /* PG18: ExplainState moved out of explain.h */
+#include "commands/explain_format.h" /* PG18: ExplainPropertyText moved here */
 #endif
 #include "commands/defrem.h"
 #if PG_VERSION_NUM >= 160000
