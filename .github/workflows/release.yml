@@ -1,0 +1,160 @@
+# Tag -> Release pipeline for duckdb_fdw.
+#
+# A push of a version tag (v*) triggers:
+#   1. build-artifacts: cross-OS x cross-PG-version matrix builds the
+#      extension (make USE_PGXS=1, no cluster needed) and packages the
+#      build outputs into per-combo tarballs:
+#        duckdb_fdw.so / libduckdb.so (dylib on macOS) +
+#        duckdb_fdw.control + duckdb_fdw--*.sql
+#      named  duckdb_fdw-<tag>-pg<PG>-<os>-<arch>.tar.gz
+#   2. release: collects all artifacts and attaches them to the GitHub
+#      release for the tag (softprops/action-gh-release).  The source
+#      zip/tar.gz assets are added by GitHub automatically.
+#
+# macOS builds use macos-14 (arm64): libduckdb.dylib from DuckDB's release
+# assets is a *universal* binary, so it runs on both Apple Silicon and
+# Intel, while the compiled duckdb_fdw extension module itself is
+# arm64 (built against the arm64 PG headers of the runner).
+#
+# The tag itself is cut from main by a maintainer (e.g. v2.0.1); this
+# workflow only consumes the tag.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Allow a dry run without cutting a real tag (ref_name falls back to the
+  # branch name / "test" in the artifact naming).
+  workflow_dispatch: {}
+
+env:
+  DUCKDB_VERSION: 1.5.1   # keep in sync with download_libduckdb.sh
+
+jobs:
+  build-artifacts:
+    name: Build ${{ matrix.os }} / PG${{ matrix.pg_version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_version: [15, 16, 17, 18]
+        os: [ubuntu-22.04, ubuntu-24.04-arm, macos-14]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # --- Install PostgreSQL server dev package (single version per job, so
+    #     pg_config unambiguously points at it — no cluster is started, we
+    #     only compile and package). ---
+    - name: Install PostgreSQL (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo apt-get update
+        sudo apt-get install -y postgresql-server-dev-${{ matrix.pg_version }} curl unzip build-essential
+
+    - name: Install PostgreSQL (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install postgresql@${{ matrix.pg_version }}
+        # GITHUB_PATH entries for both Intel- and ARM-based labels; only
+        # the matching one exists on a given runner.
+        echo "/usr/local/opt/postgresql@${{ matrix.pg_version }}/bin" >> $GITHUB_PATH
+        echo "/opt/homebrew/opt/postgresql@${{ matrix.pg_version }}/bin" >> $GITHUB_PATH
+
+    # --- Fetch prebuilt libduckdb matching this platform/arch. The script
+    #     fails hard (set -euo pipefail, curl --fail, duckdb.h check), so a
+    #     broken asset name fails this step instead of `make`. ---
+    - name: Download libduckdb
+      shell: bash
+      run: ./download_libduckdb.sh
+
+    - name: Build extension
+      shell: bash
+      run: |
+        pg_config --version
+        make USE_PGXS=1
+
+    - name: Package artifacts
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          OS_TAG="linux"
+          case "$(uname -m)" in
+            x86_64)  ARCH_TAG="x86_64" ;;
+            aarch64) ARCH_TAG="arm64"  ;;
+            *) ARCH_TAG="$(uname -m)" ;;
+          esac
+          LIBFILE="libduckdb.so"
+        else
+          OS_TAG="osx"
+          case "$(uname -m)" in
+            arm64)  ARCH_TAG="arm64"  ;;
+            x86_64) ARCH_TAG="x86_64" ;;
+            *) ARCH_TAG="$(uname -m)" ;;
+          esac
+          # macOS: libduckdb.dylib is a universal binary from DuckDB's
+          # release assets; the extension module is built for the runner's
+          # (arm64) PostgreSQL headers.
+          LIBFILE="libduckdb.dylib"
+        fi
+        TAG="${GITHUB_REF_NAME:-test}"
+        TAG="${TAG#refs/tags/}"
+        NAME="duckdb_fdw-${TAG}-pg${{ matrix.pg_version }}-${OS_TAG}-${ARCH_TAG}.tar.gz"
+
+        tar -czf "$NAME" \
+          duckdb_fdw.so \
+          "$LIBFILE" \
+          duckdb_fdw.control \
+          duckdb_fdw--*.sql
+
+        echo "artifact_name=${NAME%.tar.gz}" >> "$GITHUB_ENV"
+        echo "artifact_file=${NAME}" >> "$GITHUB_ENV"
+        ls -l "$NAME"
+        tar -tzf "$NAME"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.artifact_name }}
+        path: ${{ env.artifact_file }}
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    needs: build-artifacts
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: dist
+
+    - name: Flatten and inspect
+      shell: bash
+      run: |
+        set -eu
+        # download-artifact@v4 lays out one directory per artifact; move
+        # the tarballs into dist/ so the release upload can glob them.
+        for f in dist/*/*.tar.gz; do
+          [ -e "$f" ] || continue
+          mv "$f" dist/
+        done
+        ls -l dist/
+        # guard against an empty upload (e.g. every build job was skipped)
+        [ -n "$(ls dist/*.tar.gz 2>/dev/null)" ] || {
+          echo "No artifacts to publish" >&2; exit 1; }
+
+    - name: Publish release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: dist/*.tar.gz
+        generate_release_notes: true
+        fail_on_missing_files: true

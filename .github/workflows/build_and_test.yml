@@ -27,7 +27,7 @@ jobs:
             pg_version: 17
           - os: macos-14
             arch: arm64
-            pg_version: 16
+            pg_version: 17
 
     steps:
     - uses: actions/checkout@v4
@@ -106,6 +106,9 @@ jobs:
         PGUSER: postgres
         PGHOST: localhost
         PGPORT: 5432
+        # psql otherwise defaults the database to the OS username ("runner"),
+        # which does not exist — the cluster only has the default DBs.
+        PGDATABASE: postgres
         TEST_PROFILE: ${{ github.event.inputs.test_profile || 'core' }}
       run: |
         if [ "$RUNNER_OS" == "Windows" ]; then
@@ -120,6 +123,7 @@ jobs:
            export PGHOST="/tmp" 
            # Ensure PGHOST matches where brew postgres listens. Often /tmp or /var/run/...
            # 'createdb' worked, so 'psql' should work with default env.
+           export PGDATABASE=postgres
            unset PGPASSWORD
         fi
         

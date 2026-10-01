@@ -29,16 +29,112 @@
 #include "miscadmin.h"
 #include "executor/executor.h"
 #include "commands/explain.h"
+#if PG_VERSION_NUM >= 180000
+#include "commands/explain_state.h" /* PG18: ExplainState moved out of explain.h */
+#endif
 #include "commands/defrem.h"
+#if PG_VERSION_NUM >= 160000
 #include "varatt.h"
+#else
+#include "utils/varlena.h" /* PG15: varatt.h was split out of varlena.h in PG16 */
+#endif
 #include "nodes/nodeFuncs.h"
 #include "nodes/makefuncs.h"
 #include <ctype.h>
+
+#if PG_VERSION_NUM >= 180000
+#include "access/cmptype.h" /* COMPARE_LT / COMPARE_GT: PG18 PathKey->pk_cmptype */
+#endif
 
 PG_MODULE_MAGIC;
 
 #define DUCKDB_EPOCH_DIFF_DAYS 10957
 #define DUCKDB_EPOCH_DIFF_MICROS INT64CONST(946684800000000)
+
+/*
+ * ------------------------------------------------------------------------
+ * Planner path-creation API portability (PG15 .. PG18)
+ *
+ * The signatures of create_foreignscan_path() / create_foreign_join_path() /
+ * create_foreign_upper_path() changed three times across the supported
+ * releases (see src/include/optimizer/pathnode.h of each version):
+ *
+ *  PG15/PG16  scan/join: 10 args, upper: 9 args (no fdw_restrictinfo)
+ *      create_foreignscan_path(root, rel, target, rows,
+ *                              startup_cost, total_cost,
+ *                              pathkeys, required_outer,
+ *                              fdw_outerpath, fdw_private)
+ *  PG17       scan/join: 11 args, upper: 10 args
+ *      same as above, with fdw_restrictinfo inserted before fdw_private
+ *  PG18       scan/join: 12 args, upper: 11 args
+ *      same as PG17, plus a new int "disabled_nodes" argument inserted
+ *      after "rows" (fdw_restrictinfo is *kept*, not removed).  Extensions
+ *      that do not build parameterized foreign paths pass 0, as we do here.
+ *
+ * make_restrictinfo() differs as well: PG15 takes
+ *      (root, clause, is_pushed_down, outerjoin_delayed, pseudoconstant,
+ *       security_level, required_relids, outer_relids, nullable_relids)
+ * (9 args) while PG16+ take
+ *      (root, clause, is_pushed_down, has_clone, is_clone, pseudoconstant,
+ *       security_level, required_relids, incompatible_relids, outer_relids)
+ * (10 args).
+ *
+ * The wrappers below keep a single (PG17-style) argument list at every call
+ * site, so only this block needs to change when a new major version lands.
+ * ------------------------------------------------------------------------
+ */
+#if PG_VERSION_NUM < 170000			/* PG15/PG16: no fdw_restrictinfo arg */
+#define duckdb_create_foreignscan_path(root, rel, target, rows, sc, tc, \
+									   pk, ro, fo, fr, fp) \
+	create_foreignscan_path((root), (rel), (target), (rows), (sc), (tc), \
+							 (pk), (ro), (fo), (fp))
+#define duckdb_create_foreign_join_path(root, rel, target, rows, sc, tc, \
+									    pk, ro, fo, fr, fp) \
+	create_foreign_join_path((root), (rel), (target), (rows), (sc), (tc), \
+							  (pk), (ro), (fo), (fp))
+#define duckdb_create_foreign_upper_path(root, rel, target, rows, sc, tc, \
+									     pk, fo, fr, fp) \
+	create_foreign_upper_path((root), (rel), (target), (rows), (sc), (tc), \
+							   (pk), (fo), (fp))
+#elif PG_VERSION_NUM < 180000			/* PG17: identity mapping */
+#define duckdb_create_foreignscan_path(root, rel, target, rows, sc, tc, \
+									   pk, ro, fo, fr, fp) \
+	create_foreignscan_path((root), (rel), (target), (rows), (sc), (tc), \
+							 (pk), (ro), (fo), (fr), (fp))
+#define duckdb_create_foreign_join_path(root, rel, target, rows, sc, tc, \
+									    pk, ro, fo, fr, fp) \
+	create_foreign_join_path((root), (rel), (target), (rows), (sc), (tc), \
+							  (pk), (ro), (fo), (fr), (fp))
+#define duckdb_create_foreign_upper_path(root, rel, target, rows, sc, tc, \
+									     pk, fo, fr, fp) \
+	create_foreign_upper_path((root), (rel), (target), (rows), (sc), (tc), \
+							   (pk), (fo), (fr), (fp))
+#else							/* PG18: +disabled_nodes after rows */
+#define duckdb_create_foreignscan_path(root, rel, target, rows, sc, tc, \
+									   pk, ro, fo, fr, fp) \
+	create_foreignscan_path((root), (rel), (target), (rows), 0, (sc), (tc), \
+							 (pk), (ro), (fo), (fr), (fp))
+#define duckdb_create_foreign_join_path(root, rel, target, rows, sc, tc, \
+									    pk, ro, fo, fr, fp) \
+	create_foreign_join_path((root), (rel), (target), (rows), 0, (sc), (tc), \
+							  (pk), (ro), (fo), (fr), (fp))
+#define duckdb_create_foreign_upper_path(root, rel, target, rows, sc, tc, \
+									     pk, fo, fr, fp) \
+	create_foreign_upper_path((root), (rel), (target), (rows), 0, (sc), (tc), \
+							   (pk), (fo), (fr), (fp))
+#endif
+
+#if PG_VERSION_NUM < 160000			/* PG15: outerjoin_delayed-era signature */
+#define duckdb_make_restrictinfo(root, clause, pushed, hcl, cl, pseudo, \
+								 lvl, req, inc, outer) \
+	make_restrictinfo((root), (clause), (pushed), (false), (pseudo), \
+						 (lvl), (req), (outer), (NULL))
+#else								/* PG16+ */
+#define duckdb_make_restrictinfo(root, clause, pushed, hcl, cl, pseudo, \
+								 lvl, req, inc, outer) \
+	make_restrictinfo((root), (clause), (pushed), (hcl), (cl), (pseudo), \
+						 (lvl), (req), (inc), (outer))
+#endif
 
 bool duckdb_fdw_allow_unsupported_pg_duckdb_coexistence = false;
 
@@ -1195,7 +1291,7 @@ duckdbGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
         duckdb_estimate_path_cost_size(root, joinrel, fpinfo->joinclauses, NIL, NULL,
                                        &rows, NULL, &startup_cost, &total_cost);
         add_path(joinrel, (Path *)
-                 create_foreignscan_path(root, joinrel,
+                 duckdb_create_foreignscan_path(root, joinrel,
                                           joinrel->reltarget,
                                           rows,
                                           startup_cost,
@@ -1291,7 +1387,7 @@ duckdbGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid
     duckdb_estimate_path_cost_size(root, baserel, NIL, NIL, NULL,
                                    &rows, NULL, &startup_cost, &total_cost);
     add_path(baserel, (Path *)
-             create_foreignscan_path(root, baserel,
+             duckdb_create_foreignscan_path(root, baserel,
                                      baserel->reltarget,
                                      rows,
                                      startup_cost,
@@ -1334,9 +1430,20 @@ duckdb_pathkeys_all_foreign(PlannerInfo *root, RelOptInfo *rel, List *pathkeys)
 		/*
 		 * The comparator must be the type's standard < or > operator.
 		 */
+#if PG_VERSION_NUM >= 180000
+		/*
+		 * PG18 replaced the btree strategy number pk_strategy with the
+		 * CompareType pk_cmptype; COMPARE_LT / COMPARE_GT are the < and >
+		 * comparators (access/cmptype.h).
+		 */
+		if (pathkey->pk_cmptype != COMPARE_LT &&
+			pathkey->pk_cmptype != COMPARE_GT)
+			return false;
+#else
 		if (pathkey->pk_strategy != BTLessStrategyNumber &&
 			pathkey->pk_strategy != BTGreaterStrategyNumber)
 			return false;
+#endif
 
 		/*
 		 * Collation safety.  DuckDB has no notion of Postgres collations and
@@ -1420,7 +1527,7 @@ duckdb_add_presorted_foreign_paths(PlannerInfo *root, RelOptInfo *rel)
 	if (IS_SIMPLE_REL(rel))
 	{
 		add_path(rel, (Path *)
-				 create_foreignscan_path(root, rel,
+				 duckdb_create_foreignscan_path(root, rel,
 										  NULL, /* target: use reltarget */
 										  rows,
 										  startup_cost,
@@ -1434,7 +1541,7 @@ duckdb_add_presorted_foreign_paths(PlannerInfo *root, RelOptInfo *rel)
 	else
 	{
 		add_path(rel, (Path *)
-				 create_foreign_join_path(root, rel,
+				 duckdb_create_foreign_join_path(root, rel,
 										   NULL, /* target: use reltarget */
 										   rows,
 										   startup_cost,
@@ -2253,7 +2360,7 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
          * add_foreign_final_paths() in postgres_fdw.c.
          */
         add_path(output_rel, (Path *)
-                 create_foreign_upper_path(root,
+                 duckdb_create_foreign_upper_path(root,
                                            input_rel,
                                            root->upper_targets[UPPERREL_FINAL],
                                            rows,
@@ -2327,9 +2434,9 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
             RestrictInfo *rinfo;
 
             Assert(!IsA(hexpr, RestrictInfo));
-            rinfo = make_restrictinfo(root, hexpr, true, false, false, false,
-                                      root->qual_security_level,
-                                      output_rel->relids, NULL, NULL);
+            rinfo = duckdb_make_restrictinfo(root, hexpr, true, false, false, false,
+                                              root->qual_security_level,
+                                              output_rel->relids, NULL, NULL);
             if (duckdb_is_foreign_expr(root, output_rel, hexpr))
                 fpinfo->remote_conds = lappend(fpinfo->remote_conds, rinfo);
             else
@@ -2374,7 +2481,7 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
         duckdb_estimate_path_cost_size(root, output_rel, NIL, NIL, NULL,
                                        &rows, NULL, &startup_cost, &total_cost);
         add_path(output_rel, (Path *)
-                 create_foreignscan_path(root, output_rel,
+                 duckdb_create_foreignscan_path(root, output_rel,
                                           output_rel->reltarget,
                                           rows,
                                           startup_cost,
