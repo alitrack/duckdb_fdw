@@ -75,6 +75,13 @@ jobs:
     - name: Build extension
       shell: bash
       run: |
+        set -euo pipefail
+        # Pin to the matrix version's pg_config: runner images ship a
+        # preinstalled PostgreSQL whose pg_config shadows the pgdg one.
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          export PATH="/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH"
+          hash -r
+        fi
         pg_config --version
         make USE_PGXS=1
 
@@ -102,12 +109,18 @@ jobs:
           # (arm64) PostgreSQL headers.
           LIBFILE="libduckdb.dylib"
         fi
+        # PGXS names the module .dylib on macOS, .so elsewhere.
+        if [ "$RUNNER_OS" = "macOS" ]; then
+          MODULE="duckdb_fdw.dylib"
+        else
+          MODULE="duckdb_fdw.so"
+        fi
         TAG="${GITHUB_REF_NAME:-test}"
         TAG="${TAG#refs/tags/}"
         NAME="duckdb_fdw-${TAG}-pg${{ matrix.pg_version }}-${OS_TAG}-${ARCH_TAG}.tar.gz"
 
         tar -czf "$NAME" \
-          duckdb_fdw.so \
+          "$MODULE" \
           "$LIBFILE" \
           duckdb_fdw.control \
           duckdb_fdw--*.sql
