@@ -3,7 +3,6 @@
 
 #include "duckdb.h"
 #include "postgres.h"
-#include "nanoarrow/nanoarrow.h"
 #include "funcapi.h"
 #include "fmgr.h"
 #include "foreign/foreign.h"

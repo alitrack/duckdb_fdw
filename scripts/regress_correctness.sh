@@ -60,7 +60,7 @@ rm -f "$FDW_TEMP_DB"
 echo "连上: $($PSQL -Atc "SELECT version()")"
 
 echo "=== 环境重建 (直载 $SO) ==="
-for ft in r2_wide r2_t r2_s r2_ts r2_ftx r2_fcol r2_fcolc r2_j1 r2_j2 r2_fgrp r2_fcpy; do
+for ft in r2_wide r2_t r2_s r2_ts r2_ftx r2_fcol r2_fcolc r2_j1 r2_j2 r2_fgrp r2_fcpy r2_q13c r2_q13o; do
     psql_x "DROP FOREIGN TABLE IF EXISTS $ft CASCADE"
 done
 psql_x "DROP SERVER IF EXISTS r2_srv CASCADE"
@@ -100,6 +100,11 @@ ddl r2_j1   "AS SELECT (i)::INTEGER AS id, 'w'||i AS w FROM range(1, 101) t(i)"
 ddl r2_j2   "AS SELECT (i)::INTEGER AS id FROM range(1, 101) t(i)"
 ddl r2_grp  "AS SELECT (i%5)::INTEGER AS g, i::BIGINT AS v FROM range(1, 201) t(i)"
 ddl r2_cpy  "(v int)"
+# Q13 形状数据: cust 5 行 (id 1..5); orders: c1 一条 'pending%' (被 ON 子句
+# NOT LIKE 过滤) + 一条 'ok', c2 两条普通, c3/c4/c5 无订单
+# (VALUES 中单引号由 ddl() 翻倍转义)
+ddl r2_q13c "AS SELECT (i)::INTEGER AS id FROM range(1, 6) t(i)"
+ddl r2_q13o "AS SELECT * FROM (VALUES (1, 1, 'pending%'), (2, 1, 'ok'), (3, 2, 'plain'), (4, 2, 'plain2')) AS t(id, cid, comment)"
 
 psql_x "CREATE FOREIGN TABLE r2_wide (s16 int, t8 int, id int) SERVER r2_srv OPTIONS (table 'r2_src')" || exit 2
 psql_x "CREATE FOREIGN TABLE r2_t (id int, s16 smallint, t8 smallint, r4 real, txt text, d date, ts timestamptz, arr int[]) SERVER r2_srv OPTIONS (table 'r2_src')" || exit 2
@@ -112,6 +117,8 @@ psql_x "CREATE FOREIGN TABLE r2_j1 (id int, w text) SERVER r2_srv OPTIONS (table
 psql_x "CREATE FOREIGN TABLE r2_j2 (id int) SERVER r2_srv OPTIONS (table 'r2_j2')" || exit 2
 psql_x "CREATE FOREIGN TABLE r2_fgrp (g int, v bigint) SERVER r2_srv OPTIONS (table 'r2_grp')" || exit 2
 psql_x "CREATE FOREIGN TABLE r2_fcpy (v int) SERVER r2_srv OPTIONS (table 'r2_cpy')" || exit 2
+psql_x "CREATE FOREIGN TABLE r2_q13c (id int) SERVER r2_srv OPTIONS (table 'r2_q13c')" || exit 2
+psql_x "CREATE FOREIGN TABLE r2_q13o (id int, cid int, comment text) SERVER r2_srv OPTIONS (table 'r2_q13o')" || exit 2
 
 # $1=id ; 输出 "1" = 纯TZ chunk 路径 与 INT2+TZ 混合路径同值、年份 2020、
 # 且未落在 2000-01-01 epoch 窗口 (旧 TIMESTAMPTZ 文本回退 bug 的特征值)
@@ -222,8 +229,28 @@ check "12e 复杂列混排行(文本回退+TZ cast)与 chunk 路径同值" "$PUR
 check "12f 文本回退路径非 2000 epoch" "1" \
     "$( case "$MIXC12" in ''|*[!0-9]*) echo 0 ;; *) [ "$MIXC12" -ge 946771200 ] && echo 1 || echo 0 ;; esac )"
 
+echo "=== [13] Q13 形状: LEFT JOIN + 聚合 + ON 子句 NOT LIKE (外连接禁下推回归) ==="
+# 历史 bug: 外连接下推曾丢失 NULL 行组 (41 vs 42)。现外连接一律回退本地 join:
+# 期望 5 组: c1=1(仅 'ok' 那条, 'pending%' 被 ON 过滤), c2=2, c3/c4/c5=0(NULL 行组保留)
+check "13a Q13 逐行 (c1=1,c2=2,c3..c5=0)" "1|1
+2|2
+3|0
+4|0
+5|0" "$(psql_a "SELECT c.id, count(o.id) FROM r2_q13c c LEFT JOIN r2_q13o o ON c.id=o.cid AND o.comment NOT LIKE 'pending%' GROUP BY c.id ORDER BY c.id")"
+# EXPLAIN 断言 (以实测形态为基准, 对 merge/hash/nested-loop 均稳定):
+#  - 每个外表各一个 Foreign Scan (join 未合并进单个扫描); 若 join 被下推则只剩 1 个扫描
+#  - 存在本地 Left Join 节点 (PG 节点名 "... Left Join "; DuckDB 下推形态为 Remote SQL 里的 'LEFT JOIN' 大写, 不会误命中)
+Q13PLAN=$(psql_a "EXPLAIN SELECT c.id, count(o.id) FROM r2_q13c c LEFT JOIN r2_q13o o ON c.id=o.cid AND o.comment NOT LIKE 'pending%' GROUP BY c.id ORDER BY c.id")
+NLJOIN=$(printf '%s\n' "$Q13PLAN" | grep -c ' Left Join')
+NFS=$(printf '%s\n' "$Q13PLAN" | grep -c 'Foreign Scan on')
+if [ "${NLJOIN:-0}" -ge 1 ] && [ "${NFS:-0}" -eq 2 ]; then
+    check "13b EXPLAIN 本地左连接 (2x ForeignScan + 本地 Left Join)" "ok" "ok"
+else
+    check "13b EXPLAIN 本地左连接 (2x ForeignScan + 本地 Left Join)" "ok" "nljoin=$NLJOIN fscans=$NFS"
+fi
+
 echo "=== 自清理 ==="
-for ft in r2_fcpy r2_fgrp r2_j1 r2_j2 r2_fcol r2_fcolc r2_ftx r2_ts r2_s r2_t r2_wide; do
+for ft in r2_fcpy r2_fgrp r2_j1 r2_j2 r2_fcol r2_fcolc r2_ftx r2_ts r2_s r2_t r2_wide r2_q13c r2_q13o; do
     psql_x "DROP FOREIGN TABLE IF EXISTS $ft CASCADE"
 done
 psql_x "DROP USER MAPPING IF EXISTS FOR $PGUSER SERVER r2_srv"

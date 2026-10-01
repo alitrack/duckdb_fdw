@@ -8,7 +8,9 @@
 #--------------------------------------------------------------------------
 
 MODULE_big = duckdb_fdw
-OBJS = connection.o option.o deparse.o duckdb_fdw.o nanoarrow.o import.o sql_utils.o runtime_guard.o
+# 注意: nanoarrow.c 为 vendored 上游代码, 当前未被编译/链接 (无调用点);
+# 保留源文件以便后续接入 Arrow 主路径。恢复编译时在下方 OBJS 加回 nanoarrow.o。
+OBJS = connection.o option.o deparse.o duckdb_fdw.o import.o sql_utils.o runtime_guard.o
 
 EXTENSION = duckdb_fdw
 DATA = $(wildcard duckdb_fdw--*.sql)
