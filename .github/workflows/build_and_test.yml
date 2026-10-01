@@ -49,20 +49,28 @@ jobs:
         hash -r
         /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config --version
 
-        # Stop every cluster (incl. the image's preinstalled one on 5432),
-        # then start ONLY the matrix version's cluster on the standard port.
-        sudo pg_ctlcluster --all stop || true
+        # The pgdg postinst does NOT create a cluster on GitHub runners
+        # (policy-rcd blocks it), and the image's preinstalled cluster owns
+        # 5432. Build our own cluster from scratch: stop everything, initdb,
+        # start ours on 5432.
+        PGBIN=/usr/lib/postgresql/${{ matrix.pg_version }}/bin
         sudo service postgresql stop || true
-        sudo pg_ctlcluster ${{ matrix.pg_version }} main start
-        # Wait for our cluster.
+        sudo pkill -u postgres || true
+        sleep 1
+        sudo rm -rf /tmp/pgdata
+        sudo mkdir -p /tmp/pgdata && sudo chown postgres:postgres /tmp/pgdata
+        sudo -u postgres $PGBIN/initdb -D /tmp/pgdata -E UTF8 --auth-local=trust --auth-host=trust
+        # listen on localhost TCP so PGHOST=localhost works
+        echo "listen_addresses = 'localhost'" | sudo tee -a /tmp/pgdata/postgresql.conf
+        sudo -u postgres $PGBIN/pg_ctl -D /tmp/pgdata -l /tmp/pg.log -o "-p 5432" start
         for i in $(seq 1 30); do
-          if /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_isready -h localhost -p 5432 -q; then break; fi
+          if $PGBIN/pg_isready -h localhost -p 5432 -q; then break; fi
           sleep 1
         done
-        /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_isready -h localhost -p 5432
+        $PGBIN/pg_isready -h localhost -p 5432
 
         # Configure User
-        sudo -u postgres /usr/lib/postgresql/${{ matrix.pg_version }}/bin/psql -c "ALTER USER postgres PASSWORD 'postgres';"
+        sudo -u postgres $PGBIN/psql -h localhost -c "ALTER USER postgres PASSWORD 'postgres';"
 
     # --- macOS Setup ---
     - name: Install Dependencies (macOS)

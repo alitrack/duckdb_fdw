@@ -8,6 +8,61 @@
 #include "utils/syscache.h"
 #include "commands/defrem.h"
 #include "lib/stringinfo.h"
+#include "foreign/foreign.h"
+#include "catalog/pg_user_mapping.h"
+#include "access/reloptions.h"
+#include "fmgr.h"
+#include "funcapi.h"
+
+/*
+ * duckdb_get_user_mapping_soft - look up the current user's mapping for
+ * `server` without ERRORing when none exists.
+ *
+ * The core GetUserMapping() ereports "user mapping not found" unless the
+ * user (or PUBLIC) has a mapping.  duckdb_fdw treats user mappings as
+ * optional (all credentials can live on the FOREIGN SERVER instead), so
+ * every lookup here must tolerate a missing mapping.  This mirrors the
+ * core implementation (user first, then PUBLIC) but returns NULL instead
+ * of raising.  GetUserMappingExtended(elevel) is not available on
+ * PG15-18, hence the open-coded syscache search.
+ */
+static UserMapping *
+duckdb_get_user_mapping_soft(Oid userid, Oid serverid)
+{
+	HeapTuple	tp;
+	Form_pg_user_mapping umform;
+	UserMapping *um;
+	Datum		options;
+	bool		isnull;
+
+	tp = SearchSysCache2(USERMAPPINGUSERSERVER,
+						 ObjectIdGetDatum(userid),
+						 ObjectIdGetDatum(serverid));
+	if (!HeapTupleIsValid(tp))
+	{
+		/* Not found for the specific user -- try PUBLIC */
+		tp = SearchSysCache2(USERMAPPINGUSERSERVER,
+							 ObjectIdGetDatum(InvalidOid),
+							 ObjectIdGetDatum(serverid));
+	}
+	if (!HeapTupleIsValid(tp))
+		return NULL;
+
+	umform = (Form_pg_user_mapping) GETSTRUCT(tp);
+	um = (UserMapping *) palloc(sizeof(UserMapping));
+	um->umid = umform->oid;
+	um->userid = userid;
+	um->serverid = serverid;
+
+	/* Extract umoptions (may be NULL for a mapping without options) */
+	options = SysCacheGetAttr(USERMAPPINGUSERSERVER, tp,
+							  Anum_pg_user_mapping_umoptions, &isnull);
+	um->options = isnull ? NIL : untransformRelOptions(options);
+
+	ReleaseSysCache(tp);
+	return um;
+}
+
 
 typedef struct ConnCacheKey
 {
@@ -244,7 +299,7 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
      * S3 credentials in user_mapping are only visible to the mapped user
      * and superusers, unlike pg_foreign_server which is public-readable. */
     {
-        UserMapping *um = GetUserMapping(userid, server->serverid);
+        UserMapping *um = duckdb_get_user_mapping_soft(userid, server->serverid);
         if (um && um->options)
         {
             foreach(lc, um->options)
@@ -577,7 +632,7 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 	key.serverid = server->serverid;
 	key.force_readonly = duckdb_fdw_server_is_readonly(server);
 	{
-		UserMapping *um = GetUserMapping(GetUserId(), server->serverid);
+		UserMapping *um = duckdb_get_user_mapping_soft(GetUserId(), server->serverid);
 
 		/*
 		 * No mapping (or synthetic owner/superuser mapping): fall back to
@@ -614,7 +669,7 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 
         /* Check user mapping for quack_token first (secure path) */
         {
-            UserMapping *um = GetUserMapping(userid, server->serverid);
+            UserMapping *um = duckdb_get_user_mapping_soft(userid, server->serverid);
             if (um && um->options)
             {
                 ListCell *umlc;
