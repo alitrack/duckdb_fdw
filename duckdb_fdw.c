@@ -246,6 +246,42 @@ duckdb_fetch_next_chunk(DuckDBFdwExecState *festate)
 }
 
 /*
+ * duckdb_pg_type_native_chunk
+ *  Single source of truth for "this PG column type has a native fixed-width
+ *  physical layout that both sides can trust":
+ *   - the deparser (duckdb_deparse_target_list) uses it to decide whether
+ *     the remote SELECT emits the column bare or wrapped in
+ *     CAST(... AS VARCHAR) (the latter forces the per-value text fallback);
+ *   - the chunk fast path (duckdb_can_use_chunk_scan) uses it as the
+ *     plan-time gate before reading vectors with a fixed stride.
+ *  The exact runtime physical width is still enforced separately by
+ *  duckdb_chunk_types_ok() on the DuckDB-side column types (double
+ *  insurance: plan-time PG type may pass, the runtime physical width must
+ *  match exactly — DuckDB widens some results, e.g. sum() -> HUGEINT).
+ *  Pure function, no state: do not add per-column special cases here,
+ *  and do not keep hand-written copies of this set elsewhere.
+ */
+bool
+duckdb_pg_type_native_chunk(Oid pgtype)
+{
+	switch (pgtype)
+	{
+		case BOOLOID:
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case FLOAT4OID:
+		case FLOAT8OID:
+		case DATEOID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/*
  * duckdb_chunk_types_ok
  *  The fast chunk-scan path in duckdbIterateForeignScan reads each vector
  *  element as a fixed-width physical value sized by the *Postgres* column
@@ -259,10 +295,13 @@ duckdb_fetch_next_chunk(DuckDBFdwExecState *festate)
  *  silently corrupting roughly half the values (e.g. sum columns coming
  *  back as 0 on odd-indexed rows).
  *
- *  When every retrieved column's DuckDB type is one of the fixed-width
+ *  When every retrieved column's PG type is native fixed-width per
+ *  duckdb_pg_type_native_chunk() (checked earlier by
+ *  duckdb_can_use_chunk_scan) and its DuckDB type is one of the fixed-width
  *  physical types the fast path assumes, it is safe to use; otherwise
  *  (HUGEINT, UBIGINT, DECIMAL, VARCHAR, LIST, ...) fall back to the
- *  type-correct duckdb_value_to_pg() text path.
+ *  type-correct duckdb_value_to_pg() text path.  The per-type exact-width
+ *  checks below must stay in lockstep with duckdb_pg_type_native_chunk().
  */
 static bool
 duckdb_chunk_types_ok(duckdb_result *res, TupleDesc tupdesc, List *retrieved_attrs)
@@ -364,21 +403,20 @@ duckdb_can_use_chunk_scan(TupleDesc tupdesc, List *retrieved_attrs)
 			return false;
 
 		pgtype = TupleDescAttr(tupdesc, attnum_pg - 1)->atttypid;
-		switch (pgtype)
-		{
-			case BOOLOID:
-			case INT2OID:
-			case INT4OID:
-			case INT8OID:
-			case FLOAT4OID:
-			case FLOAT8OID:
-			case DATEOID:
-			case TIMESTAMPOID:
-			case TIMESTAMPTZOID:
-				break;
-			default:
-				return false;
-		}
+
+		/*
+		 * Plan-time gate: only PG types with a native fixed-width layout may
+		 * use the chunk fast path.  The set is the shared
+		 * duckdb_pg_type_native_chunk() — the same function the deparser
+		 * (duckdb_deparse_target_list) uses to decide whether the remote
+		 * SELECT emits the column bare, so the two lists can no longer drift
+		 * apart.  The exact physical width is still enforced at runtime by
+		 * duckdb_chunk_types_ok(): plan-time PG type may pass, the runtime
+		 * physical width must match exactly (DuckDB widens some results,
+		 * e.g. sum() -> HUGEINT).
+		 */
+		if (!duckdb_pg_type_native_chunk(pgtype))
+			return false;
 	}
 
 	return true;

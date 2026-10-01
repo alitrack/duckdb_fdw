@@ -64,6 +64,7 @@ sudo make install
 ### Requirements
 * PostgreSQL 13 - 18 (headers required)
 * DuckDB library (`libduckdb.so` or `libduckdb.dylib`) with repo-pinned bootstrap default `1.5.1`
+* Tested with libduckdb 1.5.x (FDW asserts version range [1.5, 1.6) on first connection and fails startup with a clear error outside it)
 * GCC or Clang with C11/C++11 support
 
 ## 🛠️ Usage

@@ -485,6 +485,49 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 	    }
 }
 
+static bool duckdb_lib_version_checked = false;
+
+/*
+ * Assert that the loaded libduckdb is inside the tested range
+ * [1.5, 1.6).  Runs once per backend at first connection (deliberately
+ * NOT in _PG_init, so merely LOADing the extension can never fail).
+ * The FDW is built against the bundled libduckdb headers; a runtime
+ * library outside the tested range means the C API surface the FDW
+ * relies on (value accessors, vector layout, TIMESTAMP_TZ semantics)
+ * may have changed, so fail loudly instead of silently trusting it.
+ */
+static void
+duckdb_assert_library_version(void)
+{
+	const char *ver;
+	int			major = -1;
+	int			minor = -1;
+
+	if (duckdb_lib_version_checked)
+		return;
+	duckdb_lib_version_checked = true;
+
+	ver = duckdb_library_version();
+	/*
+	 * duckdb_library_version() returns strings like "v1.5.1": skip a
+	 * leading non-digit prefix (the 'v') before parsing major.minor.
+	 */
+	{
+		const char *p = ver;
+
+		while (*p && (*p < '0' || *p > '9'))
+			p++;
+		if (sscanf(p, "%d.%d", &major, &minor) < 2)
+			elog(ERROR, "duckdb_fdw: unparseable libduckdb version \"%s\", "
+				 "tested range [1.5, 1.6)", ver);
+	}
+
+	/* supported iff 1.5.x: major/minor < 1.5, or >= 1.6 (incl. 2.x) */
+	if (major != 1 || minor < 5 || minor > 5)
+		elog(ERROR, "duckdb_fdw: unsupported libduckdb %s, "
+			 "tested range [1.5, 1.6)", ver);
+}
+
 duckdb_connection
 duckdb_get_connection(ForeignServer *server, bool truncatable)
 {
@@ -493,6 +536,7 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 	ConnCacheKey key;
 
 	duckdb_runtime_guard_check();
+	duckdb_assert_library_version();
 
 	if (ConnectionHash == NULL)
 	{

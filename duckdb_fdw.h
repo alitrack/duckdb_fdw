@@ -139,6 +139,14 @@ extern char *duckdb_fdw_next_token(char *str, const char *delim, char **saveptr)
 extern bool duckdb_fdw_server_is_readonly(ForeignServer *server);
 extern bool duckdb_fdw_sql_is_readonly(const char *sql);
 
+/*
+ * Physical layout contract between deparser (which decides whether the
+ * remote SELECT emits a bare column) and the chunk fast path (which
+ * reads the vector with a fixed stride).  Keep in sync with
+ * duckdb_chunk_types_ok()'s runtime DuckDB-type check.
+ */
+extern bool duckdb_pg_type_native_chunk(Oid pgtype);   /* PG类型可走原生定宽 */
+
 /* Internal functions */
 extern void duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level);
 extern duckdb_connection duckdb_get_connection(ForeignServer *server, bool truncatable);

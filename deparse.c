@@ -2073,6 +2073,11 @@ duckdb_deparse_target_list(StringInfo buf,
 			 * 返回 0), 会静默读成 epoch(2000-01-01)。此时把 TIMESTAMPTZ
 			 * 列 CAST AS VARCHAR, 由 PG 的 timestamptz_in 解析字符串;
 			 * 纯定宽行不受影响, 仍走 chunk 快速路径。
+			 *
+			 * 判定“哪些 PG 类型算原生定宽/可裸输出”与运行期 chunk 门
+			 * duckdb_can_use_chunk_scan() 共用同一事实源:
+			 * duckdb_pg_type_native_chunk() (duckdb_fdw.h/.c); 历史双白名单
+			 * 靠注释手工同步, 曾导致 TIMESTAMPTZ epoch 与 INT 宽度两类 bug。
 			 */
 			need_tz_cast = false;
 			if (!is_concat && !check_null)
@@ -2092,36 +2097,23 @@ duckdb_deparse_target_list(StringInfo buf,
 				/*
 				 * 触发条件必须与"运行时是否走文本回退"一致: 回退由
 				 * duckdb_chunk_types_ok 按输出列的 DuckDB 类型判定。
-				 * deparse 会把不在下方 no-cast 清单里的列(INT2/FLOAT4/
-				 * TEXT 之外的复杂类型)包成 CAST(... AS VARCHAR), 输出
-				 * 即 VARCHAR, 整行必走文本回退。因此白名单必须等于
-				 * "原生输出且定宽"的 PG 类型集合:
-				 * BOOL/INT4/INT8/FLOAT8/DATE/TIMESTAMP/TIMESTAMPTZ。
-				 * (INT2/FLOAT4 虽属定宽, 但 deparse 会 CAST 成 VARCHAR,
-				 *  同样迫使回退, 必须在此触发 TZ 保护。)
+				 * deparse 会把 duckdb_pg_type_native_chunk() 判为"非原生
+				 * 定宽"的列包成 CAST(... AS VARCHAR), 输出即 VARCHAR, 整行
+				 * 必走文本回退。因此触发集合 = 共享函数判为"非原生定宽"
+				 * 的投影列(单一事实源 duckdb_pg_type_native_chunk(),
+				 * 禁止再写第二份清单)。
 				 */
-					if (ca->atttypid == BOOLOID ||
-						ca->atttypid == INT4OID ||
-						ca->atttypid == INT8OID ||
-						ca->atttypid == FLOAT8OID ||
-						ca->atttypid == DATEOID ||
-						ca->atttypid == TIMESTAMPOID ||
-						ca->atttypid == TIMESTAMPTZOID)
-						continue;
+				if (duckdb_pg_type_native_chunk(ca->atttypid))
+					continue;
 					need_tz_cast = true;
 					break;
 				}
 			}
 
-			if ((attr->atttypid == INT4OID ||
-				attr->atttypid == INT8OID ||
-				attr->atttypid == FLOAT8OID ||
-				attr->atttypid == BOOLOID ||
-				attr->atttypid == DATEOID ||
-				attr->atttypid == TIMESTAMPOID) ||
-				(attr->atttypid == TIMESTAMPTZOID && !need_tz_cast))
+			if (duckdb_pg_type_native_chunk(attr->atttypid) &&
+				(attr->atttypid != TIMESTAMPTZOID || !need_tz_cast))
 			{
-				/* 定宽列: C API 可直接读 */
+				/* 定宽列(单一事实源 duckdb_pg_type_native_chunk): C API 可直接读 */
 				duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
 			}
 			else
