@@ -2,7 +2,7 @@
    "name": "duckdb_fdw",
    "abstract": "Foreign Data Wrapper for DuckDB databases",
    "description": "PostgreSQL extension which implements a Foreign Data Wrapper (FDW) for DuckDB databases.",
-   "version": "2.0.0",
+   "version": "2.0.1",
    "maintainer": "alitrack",
    "license": "MIT",
    "provides": {
@@ -10,7 +10,7 @@
          "abstract": "Foreign Data Wrapper for DuckDB databases",
          "file": "duckdb_fdw.c",
          "docfile": "README.md",
-         "version": "2.0.0"
+         "version": "2.0.1"
       }
    },
    "prereqs": {

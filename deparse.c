@@ -2067,12 +2067,13 @@ duckdb_deparse_target_list(StringInfo buf,
              */
 			/*
 			 * 文本回退保护: 本次投影若含复杂列(数组/vector/json/decimal/
-			 * blob 等不在定宽 safe list 的类型), 整行改走文本回退路径
+			 * blob 等不在定宽 safe list 的类型)或窄宽度列(INT2/FLOAT4, 见下),
+			 * 整行可能改走文本回退路径
 			 * (duckdb_value_to_pg)。DuckDB C API 对原生 TIMESTAMPTZ 列的
 			 * value 访问器不可用(value_varchar 返回 NULL / value_timestamp
-			 * 返回 0), 会静默读成 epoch(2000-01-01)。此时把 TIMESTAMPTZ
-			 * 列 CAST AS VARCHAR, 由 PG 的 timestamptz_in 解析字符串;
-			 * 纯定宽行不受影响, 仍走 chunk 快速路径。
+			 * 返回 0), 会静默读成 epoch(2000-01-01)或 NULL。此时把
+			 * TIMESTAMPTZ 列 CAST AS VARCHAR, 由 PG 的 timestamptz_in 解析
+			 * 字符串; 纯定宽且宽度确切的行不受影响, 仍走 chunk 快速路径。
 			 *
 			 * 判定“哪些 PG 类型算原生定宽/可裸输出”与运行期 chunk 门
 			 * duckdb_can_use_chunk_scan() 共用同一事实源:
@@ -2095,18 +2096,28 @@ duckdb_deparse_target_list(StringInfo buf,
 										   attrs_used))
 						continue;
 				/*
-				 * 触发条件必须与"运行时是否走文本回退"一致: 回退由
-				 * duckdb_chunk_types_ok 按输出列的 DuckDB 类型判定。
-				 * deparse 会把 duckdb_pg_type_native_chunk() 判为"非原生
-				 * 定宽"的列包成 CAST(... AS VARCHAR), 输出即 VARCHAR, 整行
-				 * 必走文本回退。因此触发集合 = 共享函数判为"非原生定宽"
-				 * 的投影列(单一事实源 duckdb_pg_type_native_chunk(),
-				 * 禁止再写第二份清单)。
+				 * 触发条件 = “整行运行期可能走文本回退”的保守超集 (计划期
+				 * 无法预知运行期 DuckDB 类型), 两类:
+				 *  (a) duckdb_pg_type_native_chunk() 判为“非原生定宽”的列
+				 *      (数组/json 等): deparse 将其包成 CAST(... AS VARCHAR),
+				 *      输出即 VARCHAR, 整行必走文本回退 — 单一事实源
+				 *      duckdb_pg_type_native_chunk(), 禁止再写第二份清单;
+				 *  (b) E3 残角: INT2/FLOAT4 在共享定宽集合内, deparse 裸
+				 *      输出, 但 DuckDB 侧物理宽度可能不符 (如 PG 声明 int2
+				 *      而 DuckDB 实为 INTEGER): 运行期 duckdb_chunk_types_ok
+				 *      拒入快路径, 整行拖进文本回退, 同投影的裸 TZ 列在文本
+				 *      路径读成 NULL。计划期不可预知 → 保守: 同投影存在任一
+				 *      INT2/FLOAT4 列即强制 TZ cast。代价: 窄整数列+TZ 同投影
+				 *      且宽度恰好规范时, TZ 也多一次远端 cast (正确性优先,
+				 *      可接受)。
 				 */
-				if (duckdb_pg_type_native_chunk(ca->atttypid))
-					continue;
+				if (!duckdb_pg_type_native_chunk(ca->atttypid) ||
+					ca->atttypid == INT2OID ||
+					ca->atttypid == FLOAT4OID)
+				{
 					need_tz_cast = true;
 					break;
+				}
 				}
 			}
 

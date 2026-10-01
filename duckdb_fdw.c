@@ -42,6 +42,20 @@ PG_MODULE_MAGIC;
 
 bool duckdb_fdw_allow_unsupported_pg_duckdb_coexistence = false;
 
+/*
+ * E1: duckdb_fdw.keep_connection (PGC_USERSET, default off).
+ * Off (default): the xact callback tears the connection cache down at every
+ * top-level transaction end (COMMIT and ABORT alike) — historical behavior.
+ * On: after COMMIT the remote transaction is settled and the cached
+ * connections are *retained*, so the next transaction reuses the handles
+ * instead of re-opening the database, re-installing extensions and
+ * re-ATTACHing catalogs.  ABORT always tears the cache down (remote
+ * ROLLBACK first), so a half-open remote state is never handed on.  Defined
+ * here, registered in _PG_init, consumed by the xact callback in
+ * connection.c (extern there).
+ */
+bool duckdb_fdw_keep_connection = false;
+
 static void duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreignrel,
 					   List *param_join_conds, List *pathkeys,
 					   void *fpextra, double *p_rows, int *p_width,
@@ -3042,6 +3056,27 @@ _PG_init(void)
 		PGC_SUSET,
 		0,
 		duckdb_fdw_check_unsupported_pg_duckdb_coexistence,
+		NULL,
+		NULL);
+
+	DefineCustomBoolVariable(
+		"duckdb_fdw.keep_connection",
+		"Retain cached DuckDB connections across transaction commits.",
+		"Off (default): the connection cache is torn down at every top-level "
+		"transaction end.  On: after COMMIT the cached connections are kept "
+		"(the remote transaction has been settled and in_xact cleared), so the "
+		"next transaction reuses them instead of re-opening the database, "
+		"re-installing extensions and re-ATTACHing catalogs; on ABORT the "
+		"cache is still torn down after the remote ROLLBACK.  Trade-off: a "
+		"retained connection to a file-backed DuckDB database keeps the file "
+		"write lock held across transactions, so enable it per session where "
+		"reuse wins over exclusive lock holding — the gain is largest in "
+		"quack/remote mode.",
+		&duckdb_fdw_keep_connection,
+		false,
+		PGC_USERSET,
+		0,
+		NULL,
 		NULL,
 		NULL);
 

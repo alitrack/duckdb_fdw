@@ -60,7 +60,7 @@ rm -f "$FDW_TEMP_DB"
 echo "连上: $($PSQL -Atc "SELECT version()")"
 
 echo "=== 环境重建 (直载 $SO) ==="
-for ft in r2_wide r2_t r2_s r2_ts r2_ftx r2_fcol r2_fcolc r2_j1 r2_j2 r2_fgrp r2_fcpy r2_q13c r2_q13o; do
+for ft in r2_wide r2_t r2_s r2_ts r2_ftx r2_fcol r2_fcolc r2_j1 r2_j2 r2_fgrp r2_fcpy r2_q13c r2_q13o r2_mis r2_mistwin; do
     psql_x "DROP FOREIGN TABLE IF EXISTS $ft CASCADE"
 done
 psql_x "DROP SERVER IF EXISTS r2_srv CASCADE"
@@ -105,6 +105,9 @@ ddl r2_cpy  "(v int)"
 # (VALUES 中单引号由 ddl() 翻倍转义)
 ddl r2_q13c "AS SELECT (i)::INTEGER AS id FROM range(1, 6) t(i)"
 ddl r2_q13o "AS SELECT * FROM (VALUES (1, 1, 'pending%'), (2, 1, 'ok'), (3, 2, 'plain'), (4, 2, 'plain2')) AS t(id, cid, comment)"
+# [15] 数据: i 为 INTEGER (故意宽于 PG 侧 int2 声明), ts 为 TIMESTAMPTZ 确定值
+# (2024-03-15 09:00+00 .. 13:00+00, DuckDB 默认 TimeZone=UTC)
+ddl r2_mis  "AS SELECT (i)::INTEGER AS i, (TIMESTAMP '2024-03-15 08:00:00' + i * INTERVAL 1 HOUR)::TIMESTAMPTZ AS ts FROM range(1, 5) t(i)"
 
 psql_x "CREATE FOREIGN TABLE r2_wide (s16 int, t8 int, id int) SERVER r2_srv OPTIONS (table 'r2_src')" || exit 2
 psql_x "CREATE FOREIGN TABLE r2_t (id int, s16 smallint, t8 smallint, r4 real, txt text, d date, ts timestamptz, arr int[]) SERVER r2_srv OPTIONS (table 'r2_src')" || exit 2
@@ -119,6 +122,9 @@ psql_x "CREATE FOREIGN TABLE r2_fgrp (g int, v bigint) SERVER r2_srv OPTIONS (ta
 psql_x "CREATE FOREIGN TABLE r2_fcpy (v int) SERVER r2_srv OPTIONS (table 'r2_cpy')" || exit 2
 psql_x "CREATE FOREIGN TABLE r2_q13c (id int) SERVER r2_srv OPTIONS (table 'r2_q13c')" || exit 2
 psql_x "CREATE FOREIGN TABLE r2_q13o (id int, cid int, comment text) SERVER r2_srv OPTIONS (table 'r2_q13o')" || exit 2
+# [15] r2_mis 故意宽度不符: PG 声明 i int2 对应 DuckDB INTEGER; r2_mistwin 为同表正确类型声明 (i int4), 作 oracle
+psql_x "CREATE FOREIGN TABLE r2_mis (i int2, ts timestamptz) SERVER r2_srv OPTIONS (table 'r2_mis')" || exit 2
+psql_x "CREATE FOREIGN TABLE r2_mistwin (i int4, ts timestamptz) SERVER r2_srv OPTIONS (table 'r2_mis')" || exit 2
 
 # $1=id ; 输出 "1" = 纯TZ chunk 路径 与 INT2+TZ 混合路径同值、年份 2020、
 # 且未落在 2000-01-01 epoch 窗口 (旧 TIMESTAMPTZ 文本回退 bug 的特征值)
@@ -249,8 +255,52 @@ else
     check "13b EXPLAIN 本地左连接 (2x ForeignScan + 本地 Left Join)" "ok" "nljoin=$NLJOIN fscans=$NFS"
 fi
 
+echo "=== [14] keep_connection GUC: commit 保留连接 / abort 断开, 连续事务功能正确 ==="
+# 单会话多语句 (GUC 为 session 级, 跨 psql 调用不保留): 先触发 .so 加载,
+# 再 SET keep_connection=on, 然后两笔显式 COMMIT 事务 + 一笔 ABORT 事务 +
+# 一笔隐式事务, 四次 count 全部成功且等值。功能断言 (两事务都能查);
+# 连接复用带来的性能收益不硬断言 (见 README 权衡说明)。
+KEEP_OUT=$($PSQL -Atq -v ON_ERROR_STOP=1 -c "
+SELECT duckdb_fdw_version();
+SET duckdb_fdw.keep_connection = on;
+BEGIN; SELECT count(*) FROM r2_t; COMMIT;
+BEGIN; SELECT count(*) FROM r2_t; COMMIT;
+BEGIN; SELECT count(*) FROM r2_t; ABORT;
+SELECT count(*) FROM r2_t;" 2>&1)
+KEEP_EXP="$LIBVER
+3000
+3000
+3000
+3000"
+check "14a keep_connection=on: 两笔 commit + 一笔 abort 后查询均成功" "$KEEP_EXP" "$KEEP_OUT"
+
+# 对照: 默认 (off) 下同一序列行为不变 (每事务结束均清理缓存)
+KEEP_OFF_OUT=$($PSQL -Atq -v ON_ERROR_STOP=1 -c "
+SELECT duckdb_fdw_version();
+SET duckdb_fdw.keep_connection = off;
+BEGIN; SELECT count(*) FROM r2_t; COMMIT;
+BEGIN; SELECT count(*) FROM r2_t; COMMIT;
+BEGIN; SELECT count(*) FROM r2_t; ABORT;
+SELECT count(*) FROM r2_t;" 2>&1)
+check "14b keep_connection=off(默认): 同一序列行为不变" "$KEEP_EXP" "$KEEP_OFF_OUT"
+
+echo "=== [15] C1 残角: 宽度不符 INT2 + 同投影裸 TZ → 文本回退下 TZ 读 NULL (E3 修复: 保守 cast) ==="
+# 机理: INT2 在共享定宽集合 → deparse 裸输出; 但 DuckDB 侧实为 INTEGER,
+# 运行期 duckdb_chunk_types_ok 拒入快路径 → 整行文本回退。修复前文本路径对
+# 裸 TIMESTAMP_TZ 用 duckdb_value_varchar → NULL (C1 残角); 修复后同投影存在
+# INT2/FLOAT4 即保守 CAST(ts AS VARCHAR), timestamptz_in 解析 → 与正确声明
+# 的孪生表 (r2_mistwin, i int4 宽度假设成立, 走 chunk 快路径) 同值。
+check "15a 宽度不符行 i 正确 (文本回退读整数)" "2" "$(psql_a 'SELECT i FROM r2_mis WHERE i=2')"
+MIS_TS=$(psql_a "SELECT ts::text FROM r2_mis WHERE i=2")
+TWIN_TS=$(psql_a "SELECT ts::text FROM r2_mistwin WHERE i=2")
+check "15b 不符表 ts 与正确声明孪生表同值 (修复前为空=NULL)" "$TWIN_TS" "$MIS_TS"
+case "$MIS_TS" in
+  ''|NULL|'2000-01-01'*) check "15c ts 非 NULL 且非 2000 epoch" "ok" "epoch/null: '${MIS_TS}'" ;;
+  *) check "15c ts 非 NULL 且非 2000 epoch" "ok" "ok" ;;
+esac
+
 echo "=== 自清理 ==="
-for ft in r2_fcpy r2_fgrp r2_j1 r2_j2 r2_fcol r2_fcolc r2_ftx r2_ts r2_s r2_t r2_wide r2_q13c r2_q13o; do
+for ft in r2_fcpy r2_fgrp r2_j1 r2_j2 r2_fcol r2_fcolc r2_ftx r2_ts r2_s r2_t r2_wide r2_q13c r2_q13o r2_mis r2_mistwin; do
     psql_x "DROP FOREIGN TABLE IF EXISTS $ft CASCADE"
 done
 psql_x "DROP USER MAPPING IF EXISTS FOR $PGUSER SERVER r2_srv"

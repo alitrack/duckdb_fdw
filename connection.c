@@ -48,6 +48,9 @@ typedef struct ConnCacheEntry
 	bool			in_xact;
 } ConnCacheEntry;
 
+/* E1: GUC registered in duckdb_fdw.c _PG_init (see there for semantics). */
+extern bool duckdb_fdw_keep_connection;
+
 static HTAB *ConnectionHash = NULL;
 static bool ConnectionXactCallbackRegistered = false;
 
@@ -126,7 +129,23 @@ duckdb_connection_xact_callback(XactEvent event, void *arg)
 
 	}
 
-	duckdb_cleanup_connection_cache();
+	/*
+	 * E1 (duckdb_fdw.keep_connection, default off): on COMMIT with the GUC
+	 * enabled, keep the cached entries alive — the remote transaction has
+	 * just been settled (COMMIT/ROLLBACK issued above) and in_xact cleared,
+	 * so the next transaction reuses the same handles instead of re-opening
+	 * the database, re-installing extensions and re-ATTACHing catalogs.
+	 * ABORT (and PREPARE) always tears the cache down: after a remote
+	 * ROLLBACK the connection must not be handed to the next transaction,
+	 * which would risk a half-open remote state.  Trade-off: for file-backed
+	 * DuckDB databases a retained connection keeps the file write lock held
+	 * across transactions; quack/remote mode benefits most (see README.md).
+	 */
+	if (commit && duckdb_fdw_keep_connection)
+		elog(DEBUG1,
+			 "duckdb_fdw: keep_connection=on: retaining cached connection(s) across commit");
+	else
+		duckdb_cleanup_connection_cache();
 }
 
 static void
