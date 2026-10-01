@@ -49,23 +49,20 @@ jobs:
         hash -r
         /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config --version
 
-        # The preinstalled cluster owns port 5432; move our cluster to a
-        # dedicated port so tests hit the matrix version, not the image's.
-        CLUSTERDIR=/etc/postgresql/${{ matrix.pg_version }}/main
-        if [ -d "$CLUSTERDIR" ]; then
-          sudo sed -i "s/^#\?port *= .*/port = 5499/" "$CLUSTERDIR/postgresql.conf" || true
-        fi
-        sudo service postgresql start
-        # Wait for OUR cluster on 5499 (pgdg registers all installed
-        # versions; the service target starts every registered cluster).
+        # Stop every cluster (incl. the image's preinstalled one on 5432),
+        # then start ONLY the matrix version's cluster on the standard port.
+        sudo pg_ctlcluster --all stop || true
+        sudo service postgresql stop || true
+        sudo pg_ctlcluster ${{ matrix.pg_version }} main start
+        # Wait for our cluster.
         for i in $(seq 1 30); do
-          if /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_isready -h localhost -p 5499 -q; then break; fi
+          if /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_isready -h localhost -p 5432 -q; then break; fi
           sleep 1
         done
-        /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_isready -h localhost -p 5499
+        /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_isready -h localhost -p 5432
 
         # Configure User
-        sudo -u postgres /usr/lib/postgresql/${{ matrix.pg_version }}/bin/psql -p 5499 -c "ALTER USER postgres PASSWORD 'postgres';"
+        sudo -u postgres /usr/lib/postgresql/${{ matrix.pg_version }}/bin/psql -c "ALTER USER postgres PASSWORD 'postgres';"
 
     # --- macOS Setup ---
     - name: Install Dependencies (macOS)
@@ -122,9 +119,7 @@ jobs:
         PGPASSWORD: postgres
         PGUSER: postgres
         PGHOST: localhost
-        # Our pgdg cluster listens on a dedicated port (the runner image's
-        # preinstalled cluster owns 5432); Linux tests must target ours.
-        PGPORT: ${{ runner.os == 'Linux' && '5499' || '5432' }}
+        PGPORT: 5432
         # psql otherwise defaults the database to the OS username ("runner"),
         # which does not exist — the cluster only has the default DBs.
         PGDATABASE: postgres

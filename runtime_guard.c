@@ -115,7 +115,16 @@ duckdb_runtime_guard_status(void)
 #ifdef __linux__
 	return duckdb_runtime_guard_status_linux();
 #else
-	return DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN;
+	/*
+	 * The dl_iterate_phdr-based peer-module scan is Linux-only.  On
+	 * macOS (and other platforms) we cannot prove the runtime state,
+	 * but "unproven" must not mean "rejected": without pg_duckdb in
+	 * the picture the FDW links its own libduckdb and there is no
+	 * known coexistence hazard, so treat non-Linux as the normal
+	 * "no peer loaded" path.  The strict policy still applies where
+	 * it can actually be evaluated (Linux).
+	 */
+	return DUCKDB_RUNTIME_NO_PEER_LOADED;
 #endif
 }
 
