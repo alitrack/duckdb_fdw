@@ -1898,9 +1898,14 @@ duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row
             char *s = duckdb_value_varchar(&festate->res, col_idx, global_row);
             if (!s) { *value_missing = true; return (Datum)0; }
 
-            /* Handle array format conversion: DuckDB [1,2] -> PG {1,2} */
+            /*
+             * Handle array format conversion: DuckDB [1,2] -> PG {1,2}.
+             * Only for array targets; a text value like "[foo]" must be
+             * returned unchanged.
+             */
             size_t slen = strlen(s);
-            if (slen >= 2 && s[0] == '[' && s[slen-1] == ']')
+            if (get_element_type(pgtype) != InvalidOid &&
+                slen >= 2 && s[0] == '[' && s[slen-1] == ']')
             {
                 for (char *p = s; *p; p++) {
                     if (*p == '[') *p = '{';
