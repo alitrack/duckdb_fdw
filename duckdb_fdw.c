@@ -1292,7 +1292,7 @@ duckdbGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
         duckdb_estimate_path_cost_size(root, joinrel, fpinfo->joinclauses, NIL, NULL,
                                        &rows, NULL, &startup_cost, &total_cost);
         add_path(joinrel, (Path *)
-                 duckdb_create_foreignscan_path(root, joinrel,
+                 duckdb_create_foreign_join_path(root, joinrel,
                                           joinrel->reltarget,
                                           rows,
                                           startup_cost,
@@ -2482,13 +2482,12 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
         duckdb_estimate_path_cost_size(root, output_rel, NIL, NIL, NULL,
                                        &rows, NULL, &startup_cost, &total_cost);
         add_path(output_rel, (Path *)
-                 duckdb_create_foreignscan_path(root, output_rel,
+                 duckdb_create_foreign_upper_path(root, output_rel,
                                           output_rel->reltarget,
                                           rows,
                                           startup_cost,
                                           total_cost,
                                           NIL,
-                                          NULL,
                                           NULL,
                                           NIL,
                                           NIL));
