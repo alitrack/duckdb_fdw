@@ -1292,7 +1292,7 @@ duckdbGetForeignJoinPaths(PlannerInfo *root, RelOptInfo *joinrel,
         duckdb_estimate_path_cost_size(root, joinrel, fpinfo->joinclauses, NIL, NULL,
                                        &rows, NULL, &startup_cost, &total_cost);
         add_path(joinrel, (Path *)
-                 duckdb_create_foreignscan_path(root, joinrel,
+                 duckdb_create_foreign_join_path(root, joinrel,
                                           joinrel->reltarget,
                                           rows,
                                           startup_cost,
@@ -1898,9 +1898,14 @@ duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row
             char *s = duckdb_value_varchar(&festate->res, col_idx, global_row);
             if (!s) { *value_missing = true; return (Datum)0; }
 
-            /* Handle array format conversion: DuckDB [1,2] -> PG {1,2} */
+            /*
+             * Handle array format conversion: DuckDB [1,2] -> PG {1,2}.
+             * Only for array targets; a text value like "[foo]" must be
+             * returned unchanged.
+             */
             size_t slen = strlen(s);
-            if (slen >= 2 && s[0] == '[' && s[slen-1] == ']')
+            if (get_element_type(pgtype) != InvalidOid &&
+                slen >= 2 && s[0] == '[' && s[slen-1] == ']')
             {
                 for (char *p = s; *p; p++) {
                     if (*p == '[') *p = '{';
@@ -2482,13 +2487,12 @@ duckdbGetForeignUpperPaths(PlannerInfo *root, UpperRelationKind stage,
         duckdb_estimate_path_cost_size(root, output_rel, NIL, NIL, NULL,
                                        &rows, NULL, &startup_cost, &total_cost);
         add_path(output_rel, (Path *)
-                 duckdb_create_foreignscan_path(root, output_rel,
+                 duckdb_create_foreign_upper_path(root, output_rel,
                                           output_rel->reltarget,
                                           rows,
                                           startup_cost,
                                           total_cost,
                                           NIL,
-                                          NULL,
                                           NULL,
                                           NIL,
                                           NIL));

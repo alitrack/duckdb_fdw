@@ -139,17 +139,17 @@ static void
 duckdb_connection_xact_callback(XactEvent event, void *arg)
 {
 	bool			commit;
-	bool			abort;
+	bool			is_abort;
 
 	(void) arg;
 
 	commit = (event == XACT_EVENT_COMMIT ||
 			event == XACT_EVENT_PARALLEL_COMMIT);
-	abort = (event == XACT_EVENT_ABORT ||
+	is_abort = (event == XACT_EVENT_ABORT ||
 			event == XACT_EVENT_PARALLEL_ABORT ||
 			event == XACT_EVENT_PREPARE);
 
-	if (!commit && !abort)
+	if (!commit && !is_abort)
 		return;
 
 	/*
