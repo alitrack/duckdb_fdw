@@ -100,6 +100,24 @@ DROP SERVER duckdb_switch CASCADE;
 UPDATE test_types SET s = 'changed' WHERE i = 1;
 DELETE FROM test_types WHERE i = 1;
 
+-- Regression: text values that look like DuckDB lists must be returned
+-- unchanged on read; only array-typed columns get the [..] -> {..} rewrite.
+-- (A DuckDB list round-trips as a PG array; a VARCHAR that merely starts
+-- with '[' and ends with ']' must NOT be converted.)
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE IF EXISTS text_bracket');
+SELECT duckdb_execute('duckdb_test', 'CREATE TABLE text_bracket (id INTEGER, a INTEGER[], s VARCHAR)');
+SELECT duckdb_execute('duckdb_test', 'INSERT INTO text_bracket VALUES (1, [1,2,3], ''[not an array]''), (2, [7], ''[Description: No-op correction applied to line 42]'')');
+
+CREATE FOREIGN TABLE text_bracket_ft (
+    id INT4,
+    a INT4[],
+    s TEXT
+) SERVER duckdb_test OPTIONS (table 'text_bracket');
+
+SELECT * FROM text_bracket_ft ORDER BY id;
+
+DROP FOREIGN TABLE text_bracket_ft;
+
 -- Cleanup
 DROP FOREIGN TABLE test_types;
 DROP ROLE duckdb_fdw_unprivileged;
