@@ -562,13 +562,15 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 static bool duckdb_lib_version_checked = false;
 
 /*
- * Assert that the loaded libduckdb is inside the tested range
- * [1.5, 1.6).  Runs once per backend at first connection (deliberately
- * NOT in _PG_init, so merely LOADing the extension can never fail).
+ * Assert that the loaded libduckdb is inside the tested range: 1.5.x or
+ * 2.0.x.  Runs once per backend at first connection (deliberately NOT
+ * in _PG_init, so merely LOADing the extension can never fail).
  * The FDW is built against the bundled libduckdb headers; a runtime
  * library outside the tested range means the C API surface the FDW
  * relies on (value accessors, vector layout, TIMESTAMP_TZ semantics)
  * may have changed, so fail loudly instead of silently trusting it.
+ * Both 1.5.x and 2.0.x are regression tested (see the 2.0 CI target);
+ * anything else (1.4-, 1.6+, 2.1+) is refused until it is tested.
  */
 static void
 duckdb_assert_library_version(void)
@@ -576,6 +578,7 @@ duckdb_assert_library_version(void)
 	const char *ver;
 	int			major = -1;
 	int			minor = -1;
+	bool		ok;
 
 	if (duckdb_lib_version_checked)
 		return;
@@ -593,13 +596,14 @@ duckdb_assert_library_version(void)
 			p++;
 		if (sscanf(p, "%d.%d", &major, &minor) < 2)
 			elog(ERROR, "duckdb_fdw: unparseable libduckdb version \"%s\", "
-				 "tested range [1.5, 1.6)", ver);
+				 "tested range 1.5.x / 2.0.x", ver);
 	}
 
-	/* supported iff 1.5.x: major/minor < 1.5, or >= 1.6 (incl. 2.x) */
-	if (major != 1 || minor < 5 || minor > 5)
+	/* supported iff 1.5.x or 2.0.x */
+	ok = (major == 1 && minor == 5) || (major == 2 && minor == 0);
+	if (!ok)
 		elog(ERROR, "duckdb_fdw: unsupported libduckdb %s, "
-			 "tested range [1.5, 1.6)", ver);
+			 "tested range 1.5.x / 2.0.x", ver);
 }
 
 duckdb_connection

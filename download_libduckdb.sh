@@ -66,24 +66,43 @@ get_system_info
 REQUESTED_VERSION=${DUCKDB_VERSION:-$DEFAULT_DUCKDB_VERSION}
 VERSION=$(normalize_version_tag "$REQUESTED_VERSION")
 
+# DuckDB 2.0+ changed its release asset naming: instead of
+# libduckdb-${PLATFORM}-${ARCH}.zip it ships duckdb-shared-libs-${PLATFORM}-${ARCH}
+# .tar.gz (the PLATFORM/ARCH suffixes are unchanged, e.g. linux-amd64,
+# osx-universal, windows-amd64).  Detect the major version and pick the
+# matching asset base name + archive format.
+MAJOR="${REQUESTED_VERSION#v}"
+MAJOR="${MAJOR%%.*}"
+
+if [ "$MAJOR" -ge 2 ] 2>/dev/null; then
+    ASSET_BASE="duckdb-shared-libs"
+    ASSET_EXT="tar.gz"
+    EXTRACT="tar xzf"
+else
+    ASSET_BASE="libduckdb"
+    ASSET_EXT="zip"
+    EXTRACT="unzip -o"
+fi
+
 # Construct download URL
-DOWNLOAD_URL="https://github.com/duckdb/duckdb/releases/download/${VERSION}/libduckdb-${PLATFORM}-${ARCH}.zip"
+DOWNLOAD_URL="https://github.com/duckdb/duckdb/releases/download/${VERSION}/${ASSET_BASE}-${PLATFORM}-${ARCH}.${ASSET_EXT}"
+DOWNLOAD_FILE="duckdb-temp.${ASSET_EXT}"
 
 echo "Downloading DuckDB ${VERSION} for ${PLATFORM}-${ARCH}..."
 echo "URL: ${DOWNLOAD_URL}"
 
 # Download and extract.
 # --fail: return an error on HTTP 4xx/5xx (GitHub redirects a 404 asset to an
-# HTML error page; without --fail, curl exits 0 and we unzip HTML).
-curl --fail -L --retry 3 -o duckdb-temp.zip "${DOWNLOAD_URL}"
+# HTML error page; without --fail, curl exits 0 and we try to unzip/tar HTML).
+curl --fail -L --retry 3 -o "$DOWNLOAD_FILE" "${DOWNLOAD_URL}"
 
-unzip -o duckdb-temp.zip
+$EXTRACT "$DOWNLOAD_FILE"
 
-rm -f duckdb-temp.zip
+rm -f "$DOWNLOAD_FILE"
 
-# Verify the payload actually landed: the zip must unpack duckdb.h plus the
-# platform library.  Anything else (e.g. an HTML 404 page that slipped past)
-# fails here instead of at `make` time.
+# Verify the payload actually landed: the archive must unpack duckdb.h plus
+# the platform library.  Anything else (e.g. an HTML 404 page that slipped
+# past) fails here instead of at `make` time.
 if [ ! -f duckdb.h ]; then
     echo "ERROR: download did not produce duckdb.h — is ${DOWNLOAD_URL} valid?" >&2
     echo "       (404 assets yield an HTML page; check the asset name for ${PLATFORM}-${ARCH})" >&2

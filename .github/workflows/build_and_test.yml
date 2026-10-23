@@ -154,3 +154,87 @@ jobs:
         fi
 
         ./run_tests.sh --profile "$TEST_PROFILE"
+
+  # --- DuckDB 2.0.x engine CI target (issue #77) ---
+  # Same build + test as `test`, but the download step pulls the 2.0.0
+  # shared-lib artifacts (download_libduckdb.sh selects them from
+  # DUCKDB_VERSION). The runtime guard accepts 1.5.x / 2.0.x. Separate job
+  # (not a matrix include) because a matrix include with an os+pg_version
+  # that already exists MERGES into that row and would convert the default
+  # 1.5.1 run into a 2.0.0 run instead of adding 2.0.0 coverage alongside.
+  test-2.0:
+    name: Test DuckDB 2.0.0 on ${{ matrix.os }} (PG17)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+    env:
+      DUCKDB_VERSION: "2.0.0"
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+        wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+        sudo apt-get update
+        sudo apt-get install -y postgresql-17 postgresql-server-dev-17 curl unzip build-essential
+        echo "/usr/lib/postgresql/17/bin" >> $GITHUB_PATH
+        hash -r
+        /usr/lib/postgresql/17/bin/pg_config --version
+        PGBIN=/usr/lib/postgresql/17/bin
+        sudo service postgresql stop || true
+        sudo pkill -u postgres || true
+        sleep 1
+        sudo rm -rf /tmp/pgdata
+        sudo mkdir -p /tmp/pgdata && sudo chown postgres:postgres /tmp/pgdata
+        sudo -u postgres $PGBIN/initdb -D /tmp/pgdata -E UTF8 --auth-local=trust --auth-host=trust
+        echo "listen_addresses = 'localhost'" | sudo tee -a /tmp/pgdata/postgresql.conf
+        sudo -u postgres $PGBIN/pg_ctl -D /tmp/pgdata -l /tmp/pg.log -o "-p 5432" start
+        for i in $(seq 1 30); do
+          if $PGBIN/pg_isready -h localhost -p 5432 -q; then break; fi
+          sleep 1
+        done
+        $PGBIN/pg_isready -h localhost -p 5432
+        sudo -u postgres $PGBIN/psql -h localhost -c "ALTER USER postgres PASSWORD 'postgres';"
+
+    - name: Install Dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install postgresql@17
+        brew services start postgresql@17
+        echo "/usr/local/opt/postgresql@17/bin" >> $GITHUB_PATH
+        echo "/opt/homebrew/opt/postgresql@17/bin" >> $GITHUB_PATH
+        sleep 5
+        createdb postgres || true
+
+    - name: Download libduckdb ${{ env.DUCKDB_VERSION }} (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: ./download_libduckdb.sh
+
+    - name: Build and Install
+      shell: bash
+      run: |
+        make USE_PGXS=1
+        sudo make USE_PGXS=1 install || make USE_PGXS=1 install
+
+    - name: Run Tests
+      shell: bash
+      env:
+        PGPASSWORD: postgres
+        PGUSER: postgres
+        PGHOST: localhost
+        PGPORT: 5432
+        PGDATABASE: postgres
+      run: |
+        if [ "$RUNNER_OS" == "macOS" ]; then
+           export PGUSER=$(whoami)
+           export PGPASSWORD=""
+           export PGHOST="/tmp"
+           export PGDATABASE=postgres
+           unset PGPASSWORD
+        fi
+        ./run_tests.sh --profile "core"
