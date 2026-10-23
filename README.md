@@ -8,7 +8,7 @@
 
 ---
 
-## 🚀 Capability Status (v2.0.1)
+## 🚀 Capability Status (v2.0.2)
 
 | Capability | Status | Validation Evidence | Prerequisites |
 | :--- | :--- | :--- | :--- |

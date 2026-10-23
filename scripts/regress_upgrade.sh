@@ -22,12 +22,12 @@
 #      sudo 不可用             → 打印 SKIP 原因并 exit 0 (CI 无权限场景)
 #  - 测试内容 (见下 "=== [A]/[B] ==="):
 #      [A] 中段链: CREATE EXTENSION duckdb_fdw VERSION '1.4.1'
-#          → 逐条 ALTER EXTENSION duckdb_fdw UPDATE 直至 2.0.1, 逐边断言
-#            版本推进 (1.4.1→2.0.0→2.0.1), 终态做基础功能验证
+#          → 逐条 ALTER EXTENSION duckdb_fdw UPDATE 直至 2.0.2, 逐边断言
+#            版本推进 (1.4.1→2.0.0→2.0.1→2.0.2), 终态做基础功能验证
 #            (建 server + 外表 + count, 走已安装的 .so)。
 #      [B] 全链:  DROP EXTENSION → CREATE EXTENSION duckdb_fdw VERSION '1.0.0'
 #          → 逐边 UPDATE 覆盖全部升级边
-#            1.0.0→1.1.2→1.1.3→1.3.2→1.4.1→2.0.0→2.0.1, 任一边断即 FAIL
+#            1.0.0→1.1.2→1.1.3→1.3.2→1.4.1→2.0.0→2.0.1→2.0.2, 任一边断即 FAIL
 #            并输出断在哪条边 (ALTER 报错信息 / 实际停留版本)。
 #  - 结尾自清理: DROP EXTENSION + 专用库 + temp db; 系统目录里 make install
 #    的产物保留 (重跑会覆盖)。
@@ -129,17 +129,17 @@ run_upgrade_chain() {
     return 0
 }
 
-echo "=== [A] 中段链 1.4.1 → 2.0.1 + 终态基础功能 ==="
+echo "=== [A] 中段链 1.4.1 → 2.0.2 + 终态基础功能 ==="
 psql_db_x "DROP EXTENSION IF EXISTS duckdb_fdw CASCADE"
 if psql_db_x "CREATE EXTENSION duckdb_fdw VERSION '1.4.1'"; then
-    run_upgrade_chain 2.0.0 2.0.1
+    run_upgrade_chain 2.0.0 2.0.1 2.0.2
 else
     check "CREATE EXTENSION duckdb_fdw VERSION '1.4.1'" "ok" "ERROR: $(psql_db_a "CREATE EXTENSION duckdb_fdw VERSION '1.4.1'" | tail -1)"
 fi
 VER_A=$(psql_db_a "SELECT extversion FROM pg_extension WHERE extname='duckdb_fdw'")
-check "A 终态版本=2.0.1" "2.0.1" "${VER_A:-MISSING}"
+check "A 终态版本=2.0.2" "2.0.2" "${VER_A:-MISSING}"
 
-# 基础功能: 已安装 .so + 2.0.1 SQL 状态下端到端走通 (建 server + 外表 + count)
+# 基础功能: 已安装 .so + 2.0.2 SQL 状态下端到端走通 (建 server + 外表 + count)
 rm -f "$FDW_TEMP_DB"
 psql_db_x "DROP SERVER IF EXISTS u2_srv CASCADE"
 if psql_db_x "CREATE SERVER u2_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (database '$FDW_TEMP_DB')" \
@@ -154,15 +154,15 @@ psql_db_x "DROP FOREIGN TABLE IF EXISTS u2_t"
 psql_db_x "DROP USER MAPPING IF EXISTS FOR $PGUSER SERVER u2_srv"
 psql_db_x "DROP SERVER IF EXISTS u2_srv CASCADE"
 
-echo "=== [B] 全链 1.0.0 → 2.0.1 (覆盖所有升级边) ==="
+echo "=== [B] 全链 1.0.0 → 2.0.2 (覆盖所有升级边) ==="
 psql_db_x "DROP EXTENSION IF EXISTS duckdb_fdw CASCADE"
 if psql_db_x "CREATE EXTENSION duckdb_fdw VERSION '1.0.0'"; then
-    run_upgrade_chain 1.1.2 1.1.3 1.3.2 1.4.1 2.0.0 2.0.1
+    run_upgrade_chain 1.1.2 1.1.3 1.3.2 1.4.1 2.0.0 2.0.1 2.0.2
 else
     check "CREATE EXTENSION duckdb_fdw VERSION '1.0.0'" "ok" "ERROR: $(psql_db_a "CREATE EXTENSION duckdb_fdw VERSION '1.0.0'" | tail -1)"
 fi
 VER_B=$(psql_db_a "SELECT extversion FROM pg_extension WHERE extname='duckdb_fdw'")
-check "B 终态版本=2.0.1" "2.0.1" "${VER_B:-MISSING}"
+check "B 终态版本=2.0.2" "2.0.2" "${VER_B:-MISSING}"
 
 echo "=== 结果: $TOTAL 项, PASS $((TOTAL-FAILS)), FAIL $FAILS ==="
 if [ "$FAILS" -eq 0 ]; then

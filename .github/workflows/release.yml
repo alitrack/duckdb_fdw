@@ -16,7 +16,7 @@
 # Intel, while the compiled duckdb_fdw extension module itself is
 # arm64 (built against the arm64 PG headers of the runner).
 #
-# The tag itself is cut from main by a maintainer (e.g. v2.0.1); this
+# The tag itself is cut from main by a maintainer (e.g. v2.0.2); this
 # workflow only consumes the tag.
 
 name: Release
