@@ -80,7 +80,17 @@ OPTIONS (database '/tmp/duckdb_fdw_demo.db');
 
 `database ':memory:'` is a connection-scoped temporary database. `duckdb_fdw` now refreshes cached connections at transaction end, so if you create tables or views with `duckdb_execute(...)` and then read them through foreign tables in later SQL statements, use a file-backed DuckDB database by default. If you intentionally want `:memory:`, wrap the entire modeling and query sequence in the same explicit transaction.
 
-Connection reuse across transactions: `SET duckdb_fdw.keep_connection = on` (off by default, session-scoped) makes the transaction-end callback *retain* cached DuckDB connections after `COMMIT` (the remote transaction is settled first) and tear them down only on `ABORT`, so the next transaction reuses the connection instead of re-opening the database, re-installing extensions and re-`ATTACH`ing catalogs — at the cost of keeping a file-backed DuckDB database's file write lock held across transactions, so enable it per session where reuse wins over exclusive lock holding (the gain is largest for quack/remote mode).
+Connection reuse across transactions: `SET duckdb_fdw.keep_connection = on` (off by default, session-scoped) makes the transaction-end callback *retain* cached DuckDB connections after `COMMIT` (the remote transaction is settled first) and tear them down only on `ABORT`, so the next transaction reuses the connection instead of re-opening the database, re-installing extensions and re-`ATTACH`ing catalogs.
+
+> **File-backed databases + multiple sessions:** a retained connection keeps the
+> file write lock held **for as long as the session lives**. While session A holds
+> it, every *other* session that touches the same file gets a clean `failed to open
+> DuckDB` error on its next query (measured on v2.0.1, libduckdb 1.5.6 — the failure
+> is a lock contention, not a crash, and recovers as soon as A releases). This is
+> DuckDB's single-writer file model, not an FDW bug. Enable the GUC per session only
+> where reuse wins over exclusive lock holding, and never across a fleet of
+> concurrent sessions against one file — the gain is largest for quack/remote mode,
+> where the lock is on the remote side, not a shared local file.
 
 ### 2. `pg_duckdb` Coexistence Policy
 
