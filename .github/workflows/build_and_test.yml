@@ -162,7 +162,7 @@ jobs:
   # (not a matrix include) because a matrix include with an os+pg_version
   # that already exists MERGES into that row and would convert the default
   # 1.5.1 run into a 2.0.0 run instead of adding 2.0.0 coverage alongside.
-  test-2.0:
+  test-duckdb20:
     name: Test DuckDB 2.0.0 on ${{ matrix.os }} (PG17)
     runs-on: ${{ matrix.os }}
     strategy:
