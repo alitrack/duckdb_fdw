@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg_version: [15, 16, 17, 18]
+        pg_version: [15, 16, 17, 18, 19]
         os: [ubuntu-22.04, ubuntu-24.04-arm, macos-14]
 
     steps:
