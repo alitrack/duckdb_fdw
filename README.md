@@ -153,6 +153,19 @@ CREATE SERVER s3_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
 );
 ```
 
+#### S3-Compatible Endpoints (URL Style)
+
+Some S3-compatible object stores (MinIO, Ceph, ...) require path-style addressing. Use `s3_url_style` (`path` or `vhost`) to set the `URL_STYLE` of the generated S3 secret:
+
+```sql
+CREATE SERVER minio_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
+    database '/tmp/s3_cache.db',
+    s3_region 'us-east-1',
+    s3_endpoint 'minio.local:9000',
+    s3_url_style 'path'
+);
+```
+
 #### Secret Helper Function
 
 ```sql
@@ -268,6 +281,14 @@ OPTIONS (quack_host '192.168.1.10:9494');
 CREATE USER MAPPING FOR current_user SERVER quack_srv
 OPTIONS (quack_token 'shared_secret');
 
+-- TLS (default for non-local hosts): the server uses a self-signed
+-- certificate, so pin its SHA-256 fingerprint, shown on the server by
+--   SELECT info['ssl_fingerprint'] FROM quack_server_list();
+-- ALTER SERVER quack_srv OPTIONS (ADD ssl_fingerprint '43:70:A0:...:F4:52');
+
+-- Server started with quack_serve(..., disable_ssl => true): plain HTTP
+-- ALTER SERVER quack_srv OPTIONS (ADD disable_ssl 'true');
+
 -- One command: import all remote tables
 IMPORT FOREIGN SCHEMA main FROM SERVER quack_srv INTO public;
 
@@ -302,6 +323,25 @@ SELECT duckdb_execute('duckdb_srv', 'INSTALL spatial; LOAD spatial;');
 ```
 
 Result messages containing credentials (SECRET, KEY_ID, ACCESS_KEY, TOKEN, motherduck) are automatically redacted in error output for security.
+
+#### Per-connection initialization (`init_sql`)
+
+To run DuckDB SQL on **every** new connection (load extensions, set options, attach extra catalogs...), use the `init_sql` server option. It runs after secrets, extensions and `attach_catalogs` have been set up:
+
+```sql
+CREATE SERVER duckdb_srv FOREIGN DATA WRAPPER duckdb_fdw OPTIONS (
+    database '/tmp/analytics.db',
+    init_sql $$ LOAD spatial; SET threads = 4; $$
+);
+```
+
+#### Importing tables and views
+
+`IMPORT FOREIGN SCHEMA` creates a foreign table for every table **and view** in the remote schema (`duckdb_tables()` + non-internal `duckdb_views()`):
+
+```sql
+IMPORT FOREIGN SCHEMA main FROM SERVER duckdb_srv INTO public;
+```
 
 ## 📉 Feature Comparison
 

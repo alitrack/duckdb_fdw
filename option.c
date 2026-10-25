@@ -43,6 +43,7 @@ static struct DuckDBFdwOption valid_options[] =
     {"s3_endpoint", ForeignServerRelationId},
     {"s3_endpoint_type", ForeignServerRelationId}, /* e.g. 's3_tables' */
     {"s3_use_ssl", ForeignServerRelationId},
+    {"s3_url_style", ForeignServerRelationId}, /* 'path' or 'vhost' */
 
     /* S3 credentials can also be set per-user via USER MAPPING (preferred
      * for security — pg_foreign_server options are visible to all users
@@ -61,9 +62,14 @@ static struct DuckDBFdwOption valid_options[] =
     {"quack_host", ForeignServerRelationId}, /* host:port of the Quack server */
     {"quack_token", UserMappingRelationId},  /* Quack auth token (secure: user mapping) */
     {"quack_token", ForeignServerRelationId}, /* fallback: server option */
+    {"disable_ssl", ForeignServerRelationId}, /* boolean: ATTACH ... (DISABLE_SSL true|false) */
+    {"ssl_fingerprint", ForeignServerRelationId}, /* ATTACH ... (SSL_FINGERPRINT '...') */
 
     /* Extensions */
     {"extensions", ForeignServerRelationId}, /* e.g., 'httpfs,spatial,iceberg' */
+
+    /* Arbitrary DuckDB SQL run once on every new connection (LOAD, SET, ...) */
+    {"init_sql", ForeignServerRelationId},
 
 	/* Table options */
 	{"table", ForeignTableRelationId},
@@ -115,6 +121,28 @@ duckdb_fdw_validator(PG_FUNCTION_ARGS)
 		{
 			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
 					 errmsg("invalid option \"%s\"", def->defname)));
+		}
+
+		/* value checks for options whose value is spliced into DuckDB SQL */
+		if (strcmp(def->defname, "disable_ssl") == 0)
+			(void) defGetBoolean(def);
+		else if (strcmp(def->defname, "ssl_fingerprint") == 0)
+		{
+			char	   *fp = defGetString(def);
+
+			if (fp[0] == '\0' || strspn(fp, "0123456789abcdefABCDEF:") != strlen(fp))
+				ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
+						 errmsg("invalid value for option \"ssl_fingerprint\": \"%s\"", fp),
+						 errhint("Use the SHA-256 fingerprint of the server certificate as hex digits, optionally separated by colons.")));
+		}
+		else if (strcmp(def->defname, "s3_url_style") == 0)
+		{
+			char	   *style = defGetString(def);
+
+			if (strcmp(style, "path") != 0 && strcmp(style, "vhost") != 0)
+				ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
+						 errmsg("invalid value for option \"s3_url_style\": \"%s\"", style),
+						 errhint("Valid values are \"path\" and \"vhost\".")));
 		}
 	}
 	PG_RETURN_VOID();
