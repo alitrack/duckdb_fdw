@@ -117,14 +117,19 @@ typedef struct DuckDBFdwExecState
 } DuckDBFdwExecState;
 
 /* Exported functions */
-extern Datum duckdb_fdw_handler(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_validator(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_version(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_runtime_compatibility_status(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_runtime_fingerprint(PG_FUNCTION_ARGS);
-extern Datum duckdb_fdw_preflight(PG_FUNCTION_ARGS);
-extern Datum duckdb_execute(PG_FUNCTION_ARGS);
-extern Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS);
+/*
+ * SQL-callable entry points. PGDLLEXPORT must match the declaration that
+ * PG_FUNCTION_INFO_V1 emits, otherwise MSVC rejects the redeclaration
+ * (C2375) and the symbols are not exported from duckdb_fdw.dll.
+ */
+extern PGDLLEXPORT Datum duckdb_fdw_handler(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum duckdb_fdw_validator(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum duckdb_fdw_version(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum duckdb_fdw_runtime_compatibility_status(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum duckdb_fdw_runtime_fingerprint(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum duckdb_fdw_preflight(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum duckdb_execute(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS);
 extern List *duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid);
 extern duckdb_opt * duckdb_get_options(Oid foreigntableid);
 extern char *duckdb_fdw_quote_literal(const char *input);
