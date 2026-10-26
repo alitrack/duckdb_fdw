@@ -289,6 +289,8 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
     char *s3_secret_key = NULL;
     char *s3_endpoint = NULL;
     bool s3_use_ssl = true;
+    char *s3_url_style = NULL;
+    char *init_sql = NULL;
     char *extensions = NULL;
     char *attach_catalogs = NULL;
     char *motherduck_token = NULL;
@@ -324,6 +326,8 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         else if (strcmp(def->defname, "s3_secret_access_key") == 0 && s3_secret_key == NULL) s3_secret_key = defGetString(def);
         else if (strcmp(def->defname, "s3_endpoint") == 0) s3_endpoint = defGetString(def);
         else if (strcmp(def->defname, "s3_use_ssl") == 0) s3_use_ssl = defGetBoolean(def);
+        else if (strcmp(def->defname, "s3_url_style") == 0) s3_url_style = defGetString(def);
+        else if (strcmp(def->defname, "init_sql") == 0) init_sql = defGetString(def);
         else if (strcmp(def->defname, "extensions") == 0) extensions = defGetString(def);
         else if (strcmp(def->defname, "attach_catalogs") == 0) attach_catalogs = defGetString(def);
         else if (strcmp(def->defname, "motherduck_token") == 0 && motherduck_token == NULL)
@@ -394,6 +398,12 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 				char *endpoint_lit = duckdb_fdw_quote_literal(s3_endpoint);
 				appendStringInfo(&sql, "ENDPOINT %s, ", endpoint_lit);
 				pfree(endpoint_lit);
+			}
+	        if (s3_url_style)
+			{
+				char *style_lit = duckdb_fdw_quote_literal(s3_url_style);
+				appendStringInfo(&sql, "URL_STYLE %s, ", style_lit);
+				pfree(style_lit);
 			}
 	        appendStringInfo(&sql, "USE_SSL %s );", s3_use_ssl ? "true" : "false");
 	        duckdb_do_sql_command(conn, sql.data, ERROR);
@@ -557,6 +567,10 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 	        }
 	        pfree(at_copy);
 	    }
+
+    /* 6. Arbitrary user-supplied initialization SQL (LOAD, SET, ...) */
+    if (init_sql)
+        duckdb_do_sql_command(conn, init_sql, ERROR);
 }
 
 static bool duckdb_lib_version_checked = false;
@@ -668,6 +682,8 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
         const char *dbpath = NULL;
         const char *quack_host = NULL;
         const char *quack_token = NULL;
+        const char *disable_ssl = NULL;
+        const char *ssl_fingerprint = NULL;
         Oid userid = GetUserId();
         ListCell *lc;
 
@@ -695,6 +711,10 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
                 quack_host = defGetString(def);
             else if (strcmp(def->defname, "quack_token") == 0 && quack_token == NULL)
                 quack_token = defGetString(def);
+            else if (strcmp(def->defname, "disable_ssl") == 0)
+                disable_ssl = defGetBoolean(def) ? "true" : "false";
+            else if (strcmp(def->defname, "ssl_fingerprint") == 0)
+                ssl_fingerprint = defGetString(def);
         }
 
         /* Quack mode: use in-memory DuckDB if no database specified */
@@ -736,6 +756,7 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
             char *full;
             char *host_lit;
             char *attach_sql;
+            StringInfoData attach_opts;
 
             /*
              * quack is published in the default (core) repository for every
@@ -764,10 +785,31 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
              */
             full = psprintf("quack:%s", quack_host);
             host_lit = duckdb_fdw_quote_literal(full);
-            attach_sql = psprintf("ATTACH %s AS remote;", host_lit);
+            /*
+             * TLS options are passed only when set, so Quack keeps its own
+             * default otherwise (plain HTTP for localhost, TLS elsewhere).
+             * SSL_FINGERPRINT pins the server's self-signed certificate.
+             */
+            initStringInfo(&attach_opts);
+            if (disable_ssl)
+                appendStringInfo(&attach_opts, "DISABLE_SSL %s", disable_ssl);
+            if (ssl_fingerprint)
+            {
+                char *fp_lit = duckdb_fdw_quote_literal(ssl_fingerprint);
+
+                appendStringInfo(&attach_opts, "%sSSL_FINGERPRINT %s",
+                                 attach_opts.len > 0 ? ", " : "", fp_lit);
+                pfree(fp_lit);
+            }
+            if (attach_opts.len > 0)
+                attach_sql = psprintf("ATTACH %s AS remote (%s);", host_lit,
+                                      attach_opts.data);
+            else
+                attach_sql = psprintf("ATTACH %s AS remote;", host_lit);
             duckdb_do_sql_command(entry->conn, attach_sql, ERROR);
             pfree(full);
             pfree(host_lit);
+            pfree(attach_opts.data);
             pfree(attach_sql);
         }
 	}

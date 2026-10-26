@@ -254,8 +254,8 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
             return NIL;
         }
         /*
-         * 1. Get list of tables first.
-         * 2. For each table, use DESCRIBE to get accurate column info.
+         * 1. Get list of tables and (non-internal) views first.
+         * 2. For each one, use DESCRIBE to get accurate column info.
          */
 	        duckdb_result tables_res;
 			char *remote_schema_lit;
@@ -267,7 +267,12 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 	        appendStringInfo(&query,
 	            "SELECT database_name, schema_name, table_name "
 	            "FROM %sduckdb_tables() "
-	            "WHERE database_name = %s OR schema_name = %s",
+	            "WHERE database_name = %s OR schema_name = %s "
+	            "UNION ALL "
+	            "SELECT database_name, schema_name, view_name "
+	            "FROM %sduckdb_views() "
+	            "WHERE NOT internal AND (database_name = %s OR schema_name = %s)",
+	            quack_prefix, remote_schema_lit, remote_schema_lit,
 	            quack_prefix, remote_schema_lit, remote_schema_lit);
 			pfree(remote_schema_lit);
 
