@@ -737,8 +737,14 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
             char *host_lit;
             char *attach_sql;
 
+            /*
+             * quack is published in the default (core) repository for every
+             * supported libduckdb (1.5.x, 2.0.x). core_nightly only carries
+             * it for some versions (not 1.5.0/1.5.1/2.0.0), and installing
+             * from it fails when quack is already installed from core.
+             */
             duckdb_do_sql_command(entry->conn,
-                "INSTALL quack FROM core_nightly; LOAD quack;", ERROR);
+                "INSTALL quack; LOAD quack;", ERROR);
 
             if (quack_token)
             {
