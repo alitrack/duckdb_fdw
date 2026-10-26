@@ -61,11 +61,30 @@ make
 sudo make install
 ```
 
+### Quick Build (Windows)
+
+On Windows, `duckdb_fdw` is built as a DLL with CMake and MSVC (Visual Studio 2022 or the Build Tools), against the PostgreSQL installation from the EDB installer.
+
+```powershell
+# 1. Download DuckDB headers, duckdb.lib and duckdb.dll
+.\download_libduckdb.ps1
+
+# 2. Configure and build (PG_PATH defaults to C:\Program Files\PostgreSQL\18;
+#    it can also be passed as the PG_PATH environment variable)
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DPG_PATH="C:\Program Files\PostgreSQL\18"
+cmake --build build --config Release
+
+# 3. Install into PostgreSQL (run as Administrator), then restart the service
+.\install_duckdb_fdw.ps1 -PostgresBase "C:\Program Files\PostgreSQL\18"
+```
+
+The installer copies `duckdb_fdw.dll` into `<PostgresBase>\lib`, `duckdb_fdw.control` and `duckdb_fdw--*.sql` into `<PostgresBase>\share\extension`, and `duckdb.dll` into `<PostgresBase>\bin` so that the PostgreSQL server can load it.
+
 ### Requirements
 * PostgreSQL 13 - 18 (headers required)
-* DuckDB library (`libduckdb.so` or `libduckdb.dylib`) with repo-pinned bootstrap default `1.5.1`
+* DuckDB library (`libduckdb.so`, `libduckdb.dylib` or `duckdb.dll`) with repo-pinned bootstrap default `1.5.1`
 * Tested with libduckdb 1.5.x **and 2.0.x** (FDW asserts version range `1.5.x / 2.0.x` on first connection and fails startup with a clear error outside it)
-* GCC or Clang with C11/C++11 support
+* GCC or Clang with C11/C++11 support (MSVC + CMake >= 3.20 on Windows)
 
 ## 🛠️ Usage
 

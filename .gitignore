@@ -32,3 +32,5 @@ duckdb.h
 duckdb.hpp
 docs/
 .env
+build/
+duckdb.lib

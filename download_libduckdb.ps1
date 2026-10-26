@@ -36,13 +36,13 @@ if ([int]$major -ge 2) {
     $output    = "duckdb-temp.tar.gz"
     # tar.gz is not a zip; Expand-Archive cannot handle it, but bsdtar
     # ships with Windows 10+.
-    $extractCmd = { tar -xzf $using:output }
+    $extractCmd = { tar -xzf $output }
 } else {
     $assetBase = "libduckdb"
     $assetExt  = "zip"
     $assetName = "${assetBase}-${platform}-${arch}.${assetExt}"
     $output    = "duckdb-temp.zip"
-    $extractCmd = { Expand-Archive -Path $using:output -DestinationPath . -Force }
+    $extractCmd = { Expand-Archive -Path $output -DestinationPath . -Force }
 }
 
 $downloadUrl = "https://github.com/duckdb/duckdb/releases/download/${versionTag}/${assetName}"
