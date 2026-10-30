@@ -240,6 +240,59 @@ SELECT * FROM text_bracket_ft ORDER BY id;
 (2 rows)
 
 DROP FOREIGN TABLE text_bracket_ft;
+-- BLOB conversions
+SELECT duckdb_execute('duckdb_test',
+    'CREATE OR REPLACE TABLE blob_rows(i INTEGER, b BLOB);
+     INSERT INTO blob_rows VALUES
+       (1, from_hex(''0000275CFF'')), (2, ''''::BLOB), (3, NULL)');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE blob_rows(i integer, b bytea) SERVER duckdb_test;
+SELECT i, encode(b, 'hex'), octet_length(b) FROM blob_rows ORDER BY i;
+ i |   encode   | octet_length 
+---+------------+--------------
+ 1 | 0000275cff |            5
+ 2 |            |            0
+ 3 |            |             
+(3 rows)
+
+SELECT l.i, l.b FROM blob_rows l JOIN blob_rows r ON l.i = r.i ORDER BY l.i;
+ i |      b       
+---+--------------
+ 1 | \x0000275cff
+ 2 | \x
+ 3 | 
+(3 rows)
+
+WITH grouped AS MATERIALIZED (
+    SELECT b, count(*) AS n FROM blob_rows GROUP BY b
+)
+SELECT encode(b, 'hex'), b IS NULL, n FROM grouped ORDER BY b NULLS LAST;
+   encode   | ?column? | n 
+------------+----------+---
+            | f        | 1
+ 0000275cff | f        | 1
+            | t        | 1
+(3 rows)
+
+CREATE DOMAIN binary_value AS bytea;
+CREATE DOMAIN nested_binary_value AS binary_value;
+CREATE FOREIGN TABLE blob_domains(i integer, b nested_binary_value)
+SERVER duckdb_test OPTIONS (table 'blob_rows');
+SELECT i, encode(b, 'hex'), b IS NULL FROM blob_domains ORDER BY i;
+ i |   encode   | ?column? 
+---+------------+----------
+ 1 | 0000275cff | f
+ 2 |            | f
+ 3 |            | t
+(3 rows)
+
+DROP FOREIGN TABLE blob_domains;
+DROP DOMAIN nested_binary_value, binary_value;
+DROP FOREIGN TABLE blob_rows;
 -- Date conversions
 SET datestyle = 'ISO, YMD';
 SELECT duckdb_execute('duckdb_test',
