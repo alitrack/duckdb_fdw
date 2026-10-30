@@ -131,11 +131,11 @@ LINE 2: SELECT stddev(i), variance(j), log(d) FROM test_types GROUP ...
                                            ^
 -- Filter pushdown test
 EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM test_types WHERE i = 1;
-                                 QUERY PLAN                                  
------------------------------------------------------------------------------
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
  Foreign Scan on public.test_types
    Output: i, j, d, s
-   Remote SQL: SELECT "i", "j", "d", "s" FROM "test_types" WHERE (("i" = 1))
+   Remote SQL: SELECT "i", "j", "d", CAST("s" AS VARCHAR) FROM "test_types" WHERE (("i" = 1))
 (3 rows)
 
 SELECT * FROM test_types WHERE i = 1;
@@ -211,16 +211,19 @@ SELECT duckdb_execute('duckdb_test', 'DROP TABLE IF EXISTS text_bracket');
 ----------------
  
 (1 row)
+
 SELECT duckdb_execute('duckdb_test', 'CREATE TABLE text_bracket (id INTEGER, a INTEGER[], s VARCHAR)');
  duckdb_execute 
 ----------------
  
 (1 row)
+
 SELECT duckdb_execute('duckdb_test', 'INSERT INTO text_bracket VALUES (1, [1,2,3], ''[not an array]''), (2, [7], ''[Description: No-op correction applied to line 42]'')');
  duckdb_execute 
 ----------------
  
 (1 row)
+
 CREATE FOREIGN TABLE text_bracket_ft (
     id INT4,
     a INT4[],
@@ -232,6 +235,7 @@ SELECT * FROM text_bracket_ft ORDER BY id;
   1 | {1,2,3} | [not an array]
   2 | {7}     | [Description: No-op correction applied to line 42]
 (2 rows)
+
 DROP FOREIGN TABLE text_bracket_ft;
 -- Cleanup
 DROP FOREIGN TABLE test_types;
