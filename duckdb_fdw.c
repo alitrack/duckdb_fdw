@@ -153,6 +153,10 @@ bool duckdb_fdw_allow_unsupported_pg_duckdb_coexistence = false;
  */
 bool duckdb_fdw_keep_connection = false;
 
+static void duckdb_cleanup_scan(void *arg);
+static void duckdb_cleanup_modify(void *arg);
+static void duckdb_finish_modify(void *arg);
+
 static void duckdb_estimate_path_cost_size(PlannerInfo *root, RelOptInfo *foreignrel,
 					   List *param_join_conds, List *pathkeys,
 					   void *fpextra, double *p_rows, int *p_width,
@@ -209,7 +213,7 @@ duckdb_build_relation_reference(const char *table_name)
 }
 
 static void
-duckdb_bind_parameter(duckdb_prepared_statement stmt, idx_t param_idx, Oid typid, Datum val, bool isnull)
+duckdb_bind_parameter_value(duckdb_prepared_statement stmt, idx_t param_idx, Oid typid, Datum val, bool isnull)
 {
 	Oid			typoutput;
 	bool		typisvarlena;
@@ -278,6 +282,22 @@ duckdb_bind_parameter(duckdb_prepared_statement stmt, idx_t param_idx, Oid typid
 }
 
 static void
+duckdb_bind_parameter(duckdb_connection conn, duckdb_prepared_statement stmt,
+					  idx_t param, Oid type, Datum value, bool isnull)
+{
+	PG_TRY();
+	{
+		duckdb_bind_parameter_value(stmt, param, type, value, isnull);
+	}
+	PG_CATCH();
+	{
+		duckdb_mark_xact_failed(conn);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+static void
 duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, ForeignScan *fsplan)
 {
 	if (fsplan->fdw_exprs != NIL)
@@ -289,7 +309,7 @@ duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, Foreig
 		festate->param_exprs = fsplan->fdw_exprs;
 		festate->param_expr_states = ExecInitExprList(fsplan->fdw_exprs, &node->ss.ps);
 
-		if (duckdb_prepare(festate->conn, festate->query, &festate->prepared_stmt) == DuckDBError)
+		if (duckdb_prepare_checked(festate->conn, festate->query, &festate->prepared_stmt) == DuckDBError)
 		{
 			const char *err = festate->prepared_stmt ? duckdb_prepare_error(festate->prepared_stmt) : "prepare error";
 			char *err_msg = pstrdup(err ? err : "prepare error");
@@ -297,8 +317,6 @@ duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, Foreig
 				duckdb_destroy_prepare(&festate->prepared_stmt);
 			elog(ERROR, "duckdb_fdw: prepare failed: %s", err_msg);
 		}
-
-		festate->use_prepared_stmt = true;
 
 		forboth(lc_state, festate->param_expr_states, lc_expr, festate->param_exprs)
 		{
@@ -310,11 +328,11 @@ duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, Foreig
 
 			val = ExecEvalExpr(estate, node->ss.ps.ps_ExprContext, &isnull);
 			typid = exprType((Node *) expr);
-			duckdb_bind_parameter(festate->prepared_stmt, param_idx, typid, val, isnull);
+			duckdb_bind_parameter(festate->conn, festate->prepared_stmt, param_idx, typid, val, isnull);
 			param_idx++;
 		}
 
-		if (duckdb_execute_prepared(festate->prepared_stmt, &festate->res) == DuckDBError)
+		if (duckdb_execute_checked(festate->conn, festate->prepared_stmt, &festate->res) == DuckDBError)
 		{
 			/*
 			 * On failure query_executed is still false, so EndForeignScan
@@ -328,14 +346,14 @@ duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, Foreig
 	}
 	else
 	{
-		if (duckdb_query(festate->conn, festate->query, &festate->res) == DuckDBError)
+		if (duckdb_query_checked(festate->conn, festate->query, &festate->res) == DuckDBError)
 		{
 			const char *errtxt = pstrdup(duckdb_result_error(&festate->res));
 			duckdb_destroy_result(&festate->res);
 			elog(ERROR, "duckdb_fdw: query failed: %s", errtxt);
 		}
-		festate->use_prepared_stmt = false;
 	}
+	festate->query_executed = true;
 }
 
 static bool
@@ -825,7 +843,7 @@ duckdb_setup_write_mapping(DuckDBFdwExecState *festate, Oid relid,
 		char	   *sql = psprintf("DESCRIBE %s", relref);
 		duckdb_result res;
 
-		if (duckdb_query(festate->conn, sql, &res) == DuckDBError)
+		if (duckdb_query_checked(festate->conn, sql, &res) == DuckDBError)
 		{
 			char	   *err = pstrdup(duckdb_result_error(&res) ?
 									   duckdb_result_error(&res) : "unknown error");
@@ -1360,7 +1378,7 @@ duckdbGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntable
         MemSet(&count_res, 0, sizeof(count_res));
         initStringInfo(&count_sql);
         appendStringInfo(&count_sql, "SELECT COUNT(*) FROM %s", relation_ref);
-        if (duckdb_query(conn, count_sql.data, &count_res) == DuckDBSuccess)
+        if (duckdb_query_checked(conn, count_sql.data, &count_res) == DuckDBSuccess)
             query_ok = true;
         if (query_ok &&
             duckdb_row_count(&count_res) > 0)
@@ -1765,12 +1783,19 @@ duckdbGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreigntableid,
 static void
 duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 {
-    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
+    DuckDBFdwExecState *festate = node->fdw_state;
     ForeignScan *fsplan = (ForeignScan *)node->ss.ps.plan;
     ForeignTable *table;
     Oid foreigntableid;
 
+    if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
+        return;
+    if (festate)
+        MemSet(festate, 0, sizeof(*festate));
+    else
+        festate = palloc0(sizeof(*festate));
     node->fdw_state = (void *)festate;
+    duckdb_register_resource(CurrentMemoryContext, duckdb_cleanup_scan, NULL, festate);
 
     if (fsplan->scan.scanrelid > 0)
     {
@@ -1849,7 +1874,6 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 		festate->use_chunk_scan = duckdb_fetch_next_chunk(festate);
 	if (!festate->use_chunk_scan)
 		festate->current_chunk_row_count = duckdb_row_count(&festate->res);
-	festate->query_executed = true;
 	festate->is_started = true;
 }
 
@@ -1944,6 +1968,7 @@ duckdbIterateForeignScan(ForeignScanState *node)
      * This also performs the result/chunk setup that the deferred Begin
      * skipped.
      */
+    duckdb_check_access(festate->conn);
     if (!festate->query_executed)
 	{
 		ForeignScan *fsplan = (ForeignScan *) node->ss.ps.plan;
@@ -1962,7 +1987,6 @@ duckdbIterateForeignScan(ForeignScanState *node)
 			festate->use_chunk_scan = duckdb_fetch_next_chunk(festate);
 		if (!festate->use_chunk_scan)
 			festate->current_chunk_row_count = duckdb_row_count(&festate->res);
-		festate->query_executed = true;
 	}
 
     ExecClearTuple(slot);
@@ -2097,27 +2121,36 @@ duckdbIterateForeignScan(ForeignScanState *node)
 }
 
 static void
+duckdb_cleanup_scan(void *arg)
+{
+	DuckDBFdwExecState *festate = arg;
+
+	if (festate->current_chunk)
+		duckdb_destroy_data_chunk(&festate->current_chunk);
+	if (festate->query_executed)
+	{
+		duckdb_destroy_result(&festate->res);
+		festate->query_executed = false;
+	}
+	if (festate->prepared_stmt)
+		duckdb_destroy_prepare(&festate->prepared_stmt);
+}
+
+static void
 duckdbEndForeignScan(ForeignScanState *node)
 {
-	    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)node->fdw_state;
-	    if (festate)
-	    {
-			if (festate->current_chunk)
-				duckdb_destroy_data_chunk(&festate->current_chunk);
-			if (festate->query_executed)
-				duckdb_destroy_result(&festate->res);
-			if (festate->use_prepared_stmt && festate->prepared_stmt)
-				duckdb_destroy_prepare(&festate->prepared_stmt);
-	    }
+	if (node->fdw_state)
+		duckdb_cleanup_scan(node->fdw_state);
 }
 
 static void
 duckdbReScanForeignScan(ForeignScanState *node)
 {
 	DuckDBFdwExecState *oldstate = (DuckDBFdwExecState *)node->fdw_state;
+	if (oldstate)
+		duckdb_check_access(oldstate->conn);
 	duckdbEndForeignScan(node);
 	duckdbBeginForeignScan(node, 0);
-	pfree(oldstate);
 }
 
 /*
@@ -2538,48 +2571,39 @@ duckdbPlanForeignModify(PlannerInfo *root, ModifyTable *plan, Index resultRelati
 static void
 duckdbBeginForeignModify(ModifyTableState *mtstate, ResultRelInfo *resultRelInfo, List *fdw_private, int subplan_index, int eflags)
 {
-	    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)palloc0(sizeof(DuckDBFdwExecState));
-	    Relation rel = resultRelInfo->ri_RelationDesc;
-	    duckdb_opt *options = duckdb_get_options(RelationGetRelid(rel));
-		duckdb_state state;
-	    festate->conn = duckdb_get_connection(GetForeignServer(GetForeignTable(RelationGetRelid(rel))->serverid), false);
-	    /*
-	     * B5: start (or join) the remote DuckDB transaction for the
-	     * write path.  From now on every row sent on this connection
-	     * (appender flushes, SQL fallback INSERTs) lands inside it,
-	     * and the connection xact callback COMMITs/ROLLBACKs it with
-	     * the top-level PG transaction, making the INSERT atomic
-	     * (BEGIN; INSERT; ROLLBACK leaves no DuckDB residue).
-	     */
-	    duckdb_ensure_remote_xact(festate->conn);
+    MemoryContext query_cxt = mtstate ? mtstate->ps.state->es_query_cxt : CurrentMemoryContext;
+    DuckDBFdwExecState *festate = MemoryContextAllocZero(query_cxt, sizeof(*festate));
+    Relation rel = resultRelInfo->ri_RelationDesc;
+    duckdb_opt *options = duckdb_get_options(RelationGetRelid(rel));
+
+    if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
+        return;
+    resultRelInfo->ri_FdwState = festate;
+    duckdb_register_resource(query_cxt, duckdb_cleanup_modify, duckdb_finish_modify, festate);
+    festate->conn = duckdb_get_connection(GetForeignServer(GetForeignTable(RelationGetRelid(rel))->serverid), false);
+    duckdb_ensure_remote_xact(festate->conn);
     festate->table_name = options->svr_table;
     festate->tupdesc = RelationGetDescr(rel);
-	festate->use_appender = false;
-    /* options->svr_table points into persistent catalog memory — safe to free the wrapper */
     pfree(options);
-	state = duckdb_appender_create(festate->conn, NULL, festate->table_name, &festate->appender);
-		if (state == DuckDBSuccess)
-			festate->use_appender = true;
-		else
-			festate->appender = NULL;
-	    resultRelInfo->ri_FdwState = (void *)festate;
-	
-		/*
-		 * B3: name-based write mapping (PG attribute -> DuckDB column),
-		 * built from DESCRIBE of the target relation.  Runs regardless
-		 * of whether the appender could be created: the SQL fallback
-		 * path needs the mapping too.  Table-function targets (read_*
-		 * table functions, bare *.parquet paths) keep the legacy
-		 * physical-order behavior, matching the pre-existing fact that
-		 * DuckDB rejects INSERTs into table functions.
-		 */
-		if (festate->table_name != NULL)
-		{
-			char *relname = pstrdup(RelationGetRelationName(rel));
-	
-			duckdb_setup_write_mapping(festate, RelationGetRelid(rel), relname);
-			pfree(relname);
-		}
+
+    if (duckdb_appender_create(festate->conn, NULL, festate->table_name, &festate->appender) == DuckDBSuccess)
+        festate->use_appender = true;
+    else
+    {
+        /* SQL INSERT also supports targets the Appender cannot resolve. */
+        if (festate->appender)
+            duckdb_appender_destroy(&festate->appender);
+        festate->appender = NULL;
+    }
+
+    /* Appender and SQL INSERT share the remote column-name mapping. */
+    if (festate->table_name != NULL)
+    {
+        char *relname = pstrdup(RelationGetRelationName(rel));
+
+        duckdb_setup_write_mapping(festate, RelationGetRelid(rel), relname);
+        pfree(relname);
+    }
 }
 
 static void
@@ -2600,11 +2624,13 @@ static TupleTableSlot *
 duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTableSlot *slot, TupleTableSlot *planSlot)
 {
 	    DuckDBFdwExecState *festate = (DuckDBFdwExecState *)resultRelInfo->ri_FdwState;
+		duckdb_check_access(festate->conn);
 		if (festate->use_appender)
 		{
 			if (!duckdb_append_slot_row(festate, slot))
 			{
 				const char *err = duckdb_appender_error(festate->appender);
+				duckdb_mark_xact_failed(festate->conn);
 				elog(ERROR, "DuckDB appender insert failed: %s", err ? err : "unknown appender error");
 			}
 			return slot;
@@ -2668,7 +2694,7 @@ duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTab
 
 			{
 				duckdb_result res;
-				if (duckdb_query(festate->conn, sql.data, &res) == DuckDBError)
+				if (duckdb_query_checked(festate->conn, sql.data, &res) == DuckDBError)
 				{
 					/* error text is owned by the result: copy before destroy */
 					const char *errtxt = pstrdup(duckdb_result_error(&res));
@@ -2745,20 +2771,61 @@ duckdbExecForeignDelete(EState *executor, ResultRelInfo *resultRelInfo, TupleTab
 }
 
 static void
-duckdbEndForeignModify(EState *executor, ResultRelInfo *resultRelInfo)
+duckdb_cleanup_modify(void *arg)
 {
-	DuckDBFdwExecState *festate = (DuckDBFdwExecState *) resultRelInfo->ri_FdwState;
+    DuckDBFdwExecState *festate = arg;
 
-	if (!festate)
-		return;
-	if (festate->use_appender && festate->appender)
+    if (festate->appender)
+    {
+        duckdb_state cleared = duckdb_appender_clear(festate->appender);
+        duckdb_state destroyed = duckdb_appender_destroy(&festate->appender);
+
+        if (cleared == DuckDBError || destroyed == DuckDBError)
+            duckdb_mark_xact_failed(festate->conn);
+    }
+}
+
+static void
+duckdb_finish_modify(void *arg)
+{
+	DuckDBFdwExecState *festate = arg;
+
+	if (festate->appender)
 	{
 		duckdb_state close_state = duckdb_appender_close(festate->appender);
-		duckdb_appender_destroy(&festate->appender);
+		char *message = NULL;
+		duckdb_state destroy_state;
+
 		if (close_state == DuckDBError)
-			ereport(WARNING,
-					(errmsg("duckdb_fdw: appender close reported an error"),
-					 errdetail("Some buffered rows may not have been flushed to DuckDB.")));
+		{
+			const char *error = duckdb_appender_error(festate->appender);
+
+			if (error)
+				message = duckdb_fdw_redact_secret_text(error);
+		}
+		destroy_state = duckdb_appender_destroy(&festate->appender);
+		if (close_state == DuckDBError || destroy_state == DuckDBError)
+		{
+			duckdb_mark_xact_failed(festate->conn);
+			if (message)
+				ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+								errmsg("could not insert into DuckDB table"),
+								errdetail("%s", message)));
+			ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+							errmsg("could not insert into DuckDB table")));
+		}
+	}
+}
+
+static void
+duckdbEndForeignModify(EState *executor, ResultRelInfo *resultRelInfo)
+{
+	DuckDBFdwExecState *festate = resultRelInfo->ri_FdwState;
+
+	if (festate)
+	{
+		duckdb_finish_modify(festate);
+		duckdb_cleanup_modify(festate);
 	}
 }
 
@@ -3019,6 +3086,10 @@ Datum duckdb_execute(PG_FUNCTION_ARGS) {
      * which DuckDB rejects) silently no-ops and the caller cannot tell.
      */
     duckdb_connection conn = duckdb_get_connection(server, false);
+    if (duckdb_remote_xact_active(conn))
+        ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                       errmsg("cannot call duckdb_execute after a DuckDB table write has started in the same transaction"),
+                       errhint("Commit or roll back the transaction before calling duckdb_execute.")));
     duckdb_do_sql_command(conn, query, ERROR);
     PG_RETURN_VOID();
 }

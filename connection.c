@@ -13,6 +13,7 @@
 #include "access/reloptions.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "lib/ilist.h"
 
 /*
  * duckdb_get_user_mapping_soft - look up the current user's mapping for
@@ -91,16 +92,10 @@ typedef struct ConnCacheEntry
 	ConnCacheKey key;
 	duckdb_database db;
 	duckdb_connection conn;
-	/*
-	 * B5: true while this connection holds an explicit DuckDB
-	 * transaction open (BEGIN issued by the write path, not yet
-	 * settled by the xact callback).  DML is therefore atomic with
-	 * the top-level PG transaction: the callback COMMITs the remote
-	 * transaction on XACT_EVENT_COMMIT and ROLLBACKs it on ABORT.
-	 * Read-only work (scans, probes) never triggers a BEGIN and
-	 * keeps DuckDB's autocommit semantics.
-	 */
-	bool			in_xact;
+	/* A whole DuckDB transaction belongs to one PostgreSQL transaction level. */
+	bool		in_xact;
+	bool		xact_failed;
+	SubTransactionId owner;
 } ConnCacheEntry;
 
 /* E1: GUC registered in duckdb_fdw.c _PG_init (see there for semantics). */
@@ -108,6 +103,182 @@ extern bool duckdb_fdw_keep_connection;
 
 static HTAB *ConnectionHash = NULL;
 static bool ConnectionXactCallbackRegistered = false;
+
+/* Resources remain registered until their executor context is reset. */
+typedef struct DuckDBResource
+{
+	dlist_node node;
+	SubTransactionId owner;
+	void (*cleanup)(void *);
+	void (*finish)(void *);
+	void *arg;
+	MemoryContextCallback reset;
+} DuckDBResource;
+
+static dlist_head resources = DLIST_STATIC_INIT(resources);
+
+static void
+duckdb_resource_reset(void *arg)
+{
+	DuckDBResource *resource = arg;
+
+	dlist_delete(&resource->node);
+	resource->cleanup(resource->arg);
+}
+
+void
+duckdb_register_resource(MemoryContext context, void (*cleanup)(void *),
+						 void (*finish)(void *), void *arg)
+{
+	DuckDBResource *resource;
+	dlist_iter iter;
+
+	/* Rescans reuse their executor state and its existing context callback. */
+	dlist_foreach(iter, &resources)
+	{
+		resource = dlist_container(DuckDBResource, node, iter.cur);
+		if (resource->arg == arg)
+		{
+			resource->owner = GetCurrentSubTransactionId();
+			return;
+		}
+	}
+	resource = MemoryContextAllocZero(context, sizeof(*resource));
+	resource->owner = GetCurrentSubTransactionId();
+	resource->cleanup = cleanup;
+	resource->finish = finish;
+	resource->arg = arg;
+	resource->reset.func = duckdb_resource_reset;
+	resource->reset.arg = resource;
+	dlist_push_tail(&resources, &resource->node);
+	MemoryContextRegisterResetCallback(context, &resource->reset);
+}
+
+static void
+duckdb_cleanup_resources(SubTransactionId owner)
+{
+	dlist_iter iter;
+
+	dlist_foreach(iter, &resources)
+	{
+		DuckDBResource *resource = dlist_container(DuckDBResource, node, iter.cur);
+
+		if (owner == InvalidSubTransactionId || resource->owner == owner)
+			resource->cleanup(resource->arg);
+	}
+}
+
+static void
+duckdb_finish_resources(SubTransactionId owner)
+{
+	dlist_iter iter;
+
+	dlist_foreach(iter, &resources)
+	{
+		DuckDBResource *resource = dlist_container(DuckDBResource, node, iter.cur);
+
+		if (resource->finish &&
+			(owner == InvalidSubTransactionId || resource->owner == owner))
+			resource->finish(resource->arg);
+	}
+}
+
+static ConnCacheEntry *
+duckdb_connection_entry(duckdb_connection conn)
+{
+	HASH_SEQ_STATUS scan;
+	ConnCacheEntry *entry;
+
+	if (!ConnectionHash || !conn)
+		return NULL;
+	hash_seq_init(&scan, ConnectionHash);
+	while ((entry = hash_seq_search(&scan)) != NULL)
+		if (entry->conn == conn)
+		{
+			hash_seq_term(&scan);
+			return entry;
+		}
+	return NULL;
+}
+
+void
+duckdb_check_access(duckdb_connection conn)
+{
+	ConnCacheEntry *entry = duckdb_connection_entry(conn);
+
+	if (!entry || !entry->in_xact)
+		return;
+	if (entry->owner != GetCurrentSubTransactionId())
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("cannot access DuckDB from this subtransaction"),
+						errdetail("A DuckDB transaction is active in an outer transaction."),
+						errhint("Complete the current subtransaction before accessing DuckDB.")));
+	if (entry->xact_failed)
+		ereport(ERROR, (errcode(ERRCODE_IN_FAILED_SQL_TRANSACTION),
+						errmsg("DuckDB transaction requires rollback")));
+}
+
+void
+duckdb_mark_xact_failed(duckdb_connection conn)
+{
+	ConnCacheEntry *entry = duckdb_connection_entry(conn);
+
+	if (entry && entry->in_xact)
+		entry->xact_failed = true;
+}
+
+bool
+duckdb_remote_xact_active(duckdb_connection conn)
+{
+	ConnCacheEntry *entry = duckdb_connection_entry(conn);
+
+	return entry && entry->in_xact;
+}
+
+/* Managed transactions propagate even errors from optional metadata probes. */
+duckdb_state
+duckdb_query_checked(duckdb_connection conn, const char *sql, duckdb_result *res)
+{
+	duckdb_state status;
+
+	duckdb_check_access(conn);
+	status = duckdb_query(conn, sql, res);
+	if (status == DuckDBError && duckdb_remote_xact_active(conn))
+	{
+		char *message = duckdb_fdw_redact_secret_text(duckdb_result_error(res));
+
+		duckdb_mark_xact_failed(conn);
+		duckdb_destroy_result(res);
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR), errmsg("DuckDB: %s", message)));
+	}
+	return status;
+}
+
+duckdb_state
+duckdb_prepare_checked(duckdb_connection conn, const char *sql,
+					   duckdb_prepared_statement *stmt)
+{
+	duckdb_state status;
+
+	duckdb_check_access(conn);
+	status = duckdb_prepare(conn, sql, stmt);
+	if (status == DuckDBError)
+		duckdb_mark_xact_failed(conn);
+	return status;
+}
+
+duckdb_state
+duckdb_execute_checked(duckdb_connection conn, duckdb_prepared_statement stmt,
+					   duckdb_result *res)
+{
+	duckdb_state status;
+
+	duckdb_check_access(conn);
+	status = duckdb_execute_prepared(stmt, res);
+	if (status == DuckDBError)
+		duckdb_mark_xact_failed(conn);
+	return status;
+}
 
 static void
 duckdb_cleanup_connection_cache(void)
@@ -127,6 +298,7 @@ duckdb_cleanup_connection_cache(void)
 			entry->conn = NULL;
 		}
 		entry->in_xact = false;
+		entry->xact_failed = false;
 		if (entry->db)
 		{
 			duckdb_close(&entry->db);
@@ -138,108 +310,142 @@ duckdb_cleanup_connection_cache(void)
 static void
 duckdb_connection_xact_callback(XactEvent event, void *arg)
 {
-	bool			commit;
-	bool			is_abort;
+	bool		precommit = event == XACT_EVENT_PRE_COMMIT ||
+		event == XACT_EVENT_PARALLEL_PRE_COMMIT;
+	bool		commit = event == XACT_EVENT_COMMIT || event == XACT_EVENT_PARALLEL_COMMIT;
+	bool		abort = event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT;
+	bool		prepared = event == XACT_EVENT_PREPARE;
+	HASH_SEQ_STATUS scan;
+	ConnCacheEntry *entry;
 
-	(void) arg;
-
-	commit = (event == XACT_EVENT_COMMIT ||
-			event == XACT_EVENT_PARALLEL_COMMIT);
-	is_abort = (event == XACT_EVENT_ABORT ||
-			event == XACT_EVENT_PARALLEL_ABORT ||
-			event == XACT_EVENT_PREPARE);
-
-	if (!commit && !is_abort)
+	if (!precommit && !commit && !abort && !prepared && event != XACT_EVENT_PRE_PREPARE)
 		return;
-
-	/*
-	 * B5: settle the remote transaction BEFORE tearing the
-	 * connection down.  Order matters: the COMMIT/ROLLBACK must run
-	 * on the still-connected handle, and a failing settle must not
-	 * crash the callback, so it is logged as a WARNING only.  (The
-	 * XACT_EVENT_PREPARE case is treated as an abort: DuckDB cannot
-	 * participate in two-phase commits, so a remote transaction that
-	 * outlived this backend would be lost anyway.)
-	 */
-	if (ConnectionHash != NULL)
+	if (precommit)
+		duckdb_finish_resources(InvalidSubTransactionId);
+	if (ConnectionHash && (precommit || event == XACT_EVENT_PRE_PREPARE))
 	{
-		HASH_SEQ_STATUS scan;
-		ConnCacheEntry *entry;
-
-		/*
-		 * Visit every entry.  The loop always runs to completion, so
-		 * dynahash's hash_seq_search() performs the end-of-scan cleanup
-		 * itself; an extra hash_seq_term() would error out.
-		 */
+		/* Validate all connections before committing any of them. */
 		hash_seq_init(&scan, ConnectionHash);
-		while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)) != NULL)
+		while ((entry = hash_seq_search(&scan)) != NULL)
+		{
+			if (!entry->in_xact)
+				continue;
+			if (entry->xact_failed || event == XACT_EVENT_PRE_PREPARE)
+			{
+				hash_seq_term(&scan);
+				if (entry->xact_failed)
+					ereport(ERROR,
+							(errcode(ERRCODE_IN_FAILED_SQL_TRANSACTION),
+							 errmsg("cannot commit a failed DuckDB transaction"),
+							 errhint("Roll back the outer transaction and retry.")));
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot prepare a transaction after a DuckDB table write has started")));
+			}
+		}
+	}
+	if (abort)
+		duckdb_cleanup_resources(InvalidSubTransactionId);
+	if (ConnectionHash && (precommit || abort))
+	{
+		hash_seq_init(&scan, ConnectionHash);
+		while ((entry = hash_seq_search(&scan)) != NULL)
 		{
 			if (entry->in_xact && entry->conn)
 			{
-				duckdb_do_sql_command(entry->conn,
-					commit ? "COMMIT" : "ROLLBACK", WARNING);
+				/* ERROR is safe at PRE_COMMIT; ABORT cleanup uses WARNING. */
+				PG_TRY();
+				{
+					duckdb_do_sql_command(entry->conn,
+										  precommit ? "COMMIT" : "ROLLBACK",
+										  precommit ? ERROR : WARNING);
+				}
+				PG_CATCH();
+				{
+					hash_seq_term(&scan);
+					PG_RE_THROW();
+				}
+				PG_END_TRY();
 			}
 			entry->in_xact = false;
+			entry->xact_failed = false;
 		}
-
 	}
-
-	/*
-	 * E1 (duckdb_fdw.keep_connection, default off): on COMMIT with the GUC
-	 * enabled, keep the cached entries alive — the remote transaction has
-	 * just been settled (COMMIT/ROLLBACK issued above) and in_xact cleared,
-	 * so the next transaction reuses the same handles instead of re-opening
-	 * the database, re-installing extensions and re-ATTACHing catalogs.
-	 * ABORT (and PREPARE) always tears the cache down: after a remote
-	 * ROLLBACK the connection must not be handed to the next transaction,
-	 * which would risk a half-open remote state.  Trade-off: for file-backed
-	 * DuckDB databases a retained connection keeps the file write lock held
-	 * across transactions; quack/remote mode benefits most (see README.md).
-	 */
-	if (commit && duckdb_fdw_keep_connection)
-		elog(DEBUG1,
-			 "duckdb_fdw: keep_connection=on: retaining cached connection(s) across commit");
-	else
+	if (abort || prepared || (commit && !duckdb_fdw_keep_connection))
 		duckdb_cleanup_connection_cache();
 }
 
 static void
 duckdb_connection_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
-									SubTransactionId parentSubid, void *arg)
+								   SubTransactionId parentSubid, void *arg)
 {
-	(void) arg;
-	(void) mySubid;
-	(void) parentSubid;
+	HASH_SEQ_STATUS scan;
+	ConnCacheEntry *entry;
 
-	/*
-	 * DELIBERATE NO-OP (B1): cached connections must NOT be torn down on
-	 * subtransaction abort/commit.  A cached connection is owned by the
-	 * top-level transaction: it is opened lazily by duckdb_get_connection()
-	 * and released only by duckdb_connection_xact_callback() on
-	 * XACT_EVENT_COMMIT / ABORT / PARALLEL_COMMIT / PARALLEL_ABORT.  Active
-	 * plan states (ForeignScan / modify festates) hold the connection handle
-	 * in festate->conn for the whole top-level transaction, so aborting any
-	 * nested subtransaction used to close connections the parent transaction
-	 * was still using -- leaving every such festate->conn dangling.  The next
-	 * remote call on the dead handle then crashed the backend (and worse, the
-	 * connection is re-fetched from the *new* cache entry while old plan
-	 * states keep using the old one).
-	 *
-	 * Trade-off: DuckDB-side side effects performed inside an aborted
-	 * subtransaction are not rolled back individually.  That window is tiny
-	 * in this FDW: read-only queries keep no connection state, and DML is
-	 * wrapped in one explicit BEGIN/COMMIT/ROLLBACK tied to the *top-level*
-	 * transaction (see duckdb_fdw.c / B5), so a subtransaction abort cannot
-	 * leave a half-committed remote transaction behind.  Concretely, if the
-	 * parent transaction later COMMITs, rows written by the aborted
-	 * subtransaction remain on the remote side (the remote transaction is
-	 * all-or-nothing); if the parent ABORTs, they are rolled back along
-	 * with everything else.  A stale-but-open connection is far less
-	 * dangerous than a dangling one.
-	 *
-	 * The callback is kept registered (and empty) so the top-level xact
-	 * callback remains the single owner of connection lifetime.
-	 */
+	if (event == SUBXACT_EVENT_PRE_COMMIT_SUB)
+	{
+		duckdb_finish_resources(mySubid);
+		if (ConnectionHash)
+		{
+			hash_seq_init(&scan, ConnectionHash);
+			while ((entry = hash_seq_search(&scan)) != NULL)
+				if (entry->in_xact && entry->owner == mySubid && entry->xact_failed)
+				{
+					hash_seq_term(&scan);
+					ereport(ERROR, (errcode(ERRCODE_IN_FAILED_SQL_TRANSACTION),
+								errmsg("DuckDB transaction requires rollback")));
+				}
+		}
+		return;
+	}
+	if (event != SUBXACT_EVENT_ABORT_SUB && event != SUBXACT_EVENT_COMMIT_SUB)
+		return;
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		duckdb_cleanup_resources(mySubid);
+	else
+	{
+		dlist_iter iter;
+
+		dlist_foreach(iter, &resources)
+		{
+			DuckDBResource *resource = dlist_container(DuckDBResource, node, iter.cur);
+
+			if (resource->owner == mySubid)
+				resource->owner = parentSubid;
+		}
+	}
+	if (!ConnectionHash)
+		return;
+	hash_seq_init(&scan, ConnectionHash);
+	while ((entry = hash_seq_search(&scan)) != NULL)
+	{
+		if (!entry->in_xact || entry->owner != mySubid)
+			continue;
+		if (event == SUBXACT_EVENT_COMMIT_SUB)
+			entry->owner = parentSubid;
+		else
+		{
+			duckdb_result res;
+			duckdb_state status = duckdb_query(entry->conn, "ROLLBACK", &res);
+
+			if (status == DuckDBError)
+			{
+				char *message = duckdb_fdw_redact_secret_text(duckdb_result_error(&res));
+
+				duckdb_destroy_result(&res);
+				entry->xact_failed = true;
+				entry->owner = parentSubid;
+				ereport(WARNING, (errmsg("DuckDB rollback failed: %s", message)));
+			}
+			else
+			{
+				duckdb_destroy_result(&res);
+				entry->in_xact = false;
+				entry->xact_failed = false;
+				entry->owner = InvalidSubTransactionId;
+			}
+		}
+	}
 }
 
 static void
@@ -675,6 +881,7 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
 		entry->db = NULL;
 		entry->conn = NULL;
 		entry->in_xact = false;
+		entry->xact_failed = false;
 	}
 
 	if (!found || entry->conn == NULL)
@@ -813,6 +1020,7 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
             pfree(attach_sql);
         }
 	}
+	duckdb_check_access(entry->conn);
 	return entry->conn;
 }
 
@@ -825,6 +1033,8 @@ duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level)
 	{
 		const char *err = duckdb_result_error(&res);
 		char *safe_err = duckdb_fdw_redact_secret_text(err ? err : "error");
+
+		duckdb_mark_xact_failed(conn);
 
 		PG_TRY();
 		{
@@ -841,51 +1051,19 @@ duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level)
 	duckdb_destroy_result(&res);
 }
 
-/*
- * B5: make sure the connection is inside a remote (DuckDB) transaction
- * before DML is sent on it.  The first writer of the top-level PG
- * transaction issues a plain BEGIN (later writers on the same cached
- * connection reuse it); the xact callback settles it (COMMIT/ROLLBACK)
- * when the PG transaction ends, which is what makes INSERTs through the
- * FDW atomic with the surrounding PG transaction.  Connections used only
- * for reads (or duckdb_execute probes) are never started and keep
- * DuckDB's autocommit behavior.
- *
- * If BEGIN itself fails the command is aborted: executing DML in
- * autocommit would break the atomicity guarantee.
- */
+/* Start a whole remote transaction at the current PostgreSQL level. */
 void
 duckdb_ensure_remote_xact(duckdb_connection conn)
 {
-	HASH_SEQ_STATUS scan;
-	ConnCacheEntry *entry = NULL;
-	bool			found = false;
+	ConnCacheEntry *entry = duckdb_connection_entry(conn);
 
-	if (conn == NULL || ConnectionHash == NULL)
+	if (!entry)
+		elog(ERROR, "could not access DuckDB connection");
+	duckdb_check_access(conn);
+	if (entry->in_xact)
 		return;
-
-	/* locate the cache entry that owns this connection */
-	hash_seq_init(&scan, ConnectionHash);
-	while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)) != NULL)
-	{
-		if (entry->conn == conn)
-		{
-			found = true;
-			break;
-		}
-	}
-	/*
-	 * dynahash: hash_seq_search() cleans up by itself once the scan
-	 * completes; only a scan abandoned early (found == true) still
-	 * needs an explicit hash_seq_term().
-	 */
-	if (found)
-		hash_seq_term(&scan);
-
-
-	if (!found || entry->in_xact)
-		return;
-
-	duckdb_do_sql_command(entry->conn, "BEGIN", ERROR);
+	duckdb_do_sql_command(conn, "BEGIN", ERROR);
 	entry->in_xact = true;
+	entry->xact_failed = false;
+	entry->owner = GetCurrentSubTransactionId();
 }
