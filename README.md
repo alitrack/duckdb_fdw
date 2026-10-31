@@ -24,6 +24,30 @@
 | Iceberg/S3 examples | Partial | `examples/07-13` | Network, optional credentials |
 | Full Arrow C Data scan path | Planned | no `duckdb_query_arrow` call in active scan path; tracked as future work | future release |
 
+## Transactions and subtransactions
+
+INSERTs on a connection share one DuckDB transaction. An idle
+connection can start this transaction in either a top-level PostgreSQL
+transaction or a subtransaction. The PostgreSQL level that starts it owns the
+whole remote transaction. Owner rollback discards its remote changes; successful
+subtransaction completion transfers ownership to the parent until the outer
+transaction commits or rolls back.
+
+Only the owning level can access an active remote transaction. Descendants are
+rejected before remote access, including reads, writes, metadata queries, and
+cursor fetches that resume a foreign scan. PostgreSQL can still return rows
+already materialized locally. After a child releases its transaction to the
+parent, a sibling therefore cannot access that connection. Other idle
+connections remain available to the child. A purely local descendant error leaves the ancestor's remote
+transaction usable. Remote errors propagate to PostgreSQL; owner abort cleans
+remote resources and rolls back the whole DuckDB transaction, allowing retry.
+
+`duckdb_execute` runs arbitrary SQL only while the connection has no FDW-managed
+transaction. This keeps transaction-control SQL from committing or rolling back
+managed writes. PREPARE TRANSACTION is rejected while a DuckDB transaction is
+active. Remote commit errors are reported before PostgreSQL commits. PostgreSQL
+and DuckDB use separate transactions, without two-phase atomicity.
+
 ## 🧪 Test Profiles
 
 - `core`: deterministic offline suite (default)
