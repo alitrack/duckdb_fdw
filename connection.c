@@ -313,12 +313,12 @@ duckdb_connection_xact_callback(XactEvent event, void *arg)
 	bool		precommit = event == XACT_EVENT_PRE_COMMIT ||
 		event == XACT_EVENT_PARALLEL_PRE_COMMIT;
 	bool		commit = event == XACT_EVENT_COMMIT || event == XACT_EVENT_PARALLEL_COMMIT;
-	bool		abort = event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT;
+	bool		is_abort = event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT;
 	bool		prepared = event == XACT_EVENT_PREPARE;
 	HASH_SEQ_STATUS scan;
 	ConnCacheEntry *entry;
 
-	if (!precommit && !commit && !abort && !prepared && event != XACT_EVENT_PRE_PREPARE)
+	if (!precommit && !commit && !is_abort && !prepared && event != XACT_EVENT_PRE_PREPARE)
 		return;
 	if (precommit)
 		duckdb_finish_resources(InvalidSubTransactionId);
@@ -344,9 +344,9 @@ duckdb_connection_xact_callback(XactEvent event, void *arg)
 			}
 		}
 	}
-	if (abort)
+	if (is_abort)
 		duckdb_cleanup_resources(InvalidSubTransactionId);
-	if (ConnectionHash && (precommit || abort))
+	if (ConnectionHash && (precommit || is_abort))
 	{
 		hash_seq_init(&scan, ConnectionHash);
 		while ((entry = hash_seq_search(&scan)) != NULL)
@@ -371,7 +371,7 @@ duckdb_connection_xact_callback(XactEvent event, void *arg)
 			entry->xact_failed = false;
 		}
 	}
-	if (abort || prepared || (commit && !duckdb_fdw_keep_connection))
+	if (is_abort || prepared || (commit && !duckdb_fdw_keep_connection))
 		duckdb_cleanup_connection_cache();
 }
 
