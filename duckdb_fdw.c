@@ -1,6 +1,7 @@
 #include "postgres.h"
 #include "duckdb_fdw.h"
 #include "access/xact.h"
+#include "common/int.h"
 #include "executor/spi.h"
 #include "utils/uuid.h"
 #include "utils/numeric.h"
@@ -19,6 +20,7 @@
 #include "optimizer/tlist.h"
 #include "optimizer/restrictinfo.h"
 #include "utils/date.h"
+#include "utils/datetime.h"
 #include "utils/guc.h"
 #include "utils/json.h"
 #include "utils/fmgrprotos.h"
@@ -221,6 +223,21 @@ duckdb_date_from_pg(DateADT value)
 }
 
 
+static duckdb_timestamp
+duckdb_timestamp_from_pg(Timestamp value)
+{
+	duckdb_timestamp ts;
+
+	if (TIMESTAMP_NOT_FINITE(value))
+		ts.micros = TIMESTAMP_IS_NOBEGIN(value) ? -PG_INT64_MAX : PG_INT64_MAX;
+	else if (pg_add_s64_overflow(value, DUCKDB_EPOCH_DIFF_MICROS, &ts.micros) ||
+			 ts.micros == PG_INT64_MAX)
+		ereport(ERROR, (errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+						errmsg("timestamp is out of range for DuckDB")));
+	return ts;
+}
+
+
 static void
 duckdb_bind_parameter(duckdb_prepared_statement stmt, idx_t param_idx, Oid typid, Datum val, bool isnull)
 {
@@ -270,12 +287,19 @@ duckdb_bind_parameter(duckdb_prepared_statement stmt, idx_t param_idx, Oid typid
 				return;
 			}
 		case TIMESTAMPOID:
-		case TIMESTAMPTZOID:
 			{
-				duckdb_timestamp ts;
-				ts.micros = DatumGetInt64(val) + DUCKDB_EPOCH_DIFF_MICROS;
+				duckdb_timestamp ts = duckdb_timestamp_from_pg(DatumGetTimestamp(val));
+
 				if (duckdb_bind_timestamp(stmt, param_idx, ts) == DuckDBError)
 					elog(ERROR, "duckdb_fdw: bind timestamp failed at parameter %zu", (size_t) param_idx);
+				return;
+			}
+		case TIMESTAMPTZOID:
+			{
+				duckdb_timestamp ts = duckdb_timestamp_from_pg(DatumGetTimestampTz(val));
+
+				if (duckdb_bind_timestamp_tz(stmt, param_idx, ts) == DuckDBError)
+					elog(ERROR, "duckdb_fdw: bind timestamptz failed at parameter %zu", (size_t) param_idx);
 				return;
 			}
 		default:
@@ -754,10 +778,7 @@ duckdb_fdw_append_value(DuckDBFdwExecState *festate, int j, Datum val, Oid pgtyp
 			if ((mode == DUCKFDW_WM_TIMESTAMP && pgtyp == TIMESTAMPOID) ||
 				(mode == DUCKFDW_WM_TIMESTAMPTZ && pgtyp == TIMESTAMPTZOID))
 			{
-				duckdb_timestamp ts;
-
-				/* both are micros since 2000-01-01 (UTC for timestamptz) */
-				ts.micros = DatumGetInt64(val) + DUCKDB_EPOCH_DIFF_MICROS;
+				duckdb_timestamp ts = duckdb_timestamp_from_pg(DatumGetTimestamp(val));
 				return duckdb_append_timestamp(festate->appender, ts);
 			}
 			break;
@@ -1009,8 +1030,7 @@ duckdb_append_slot_row(DuckDBFdwExecState *festate, TupleTableSlot *slot)
 				case TIMESTAMPOID:
 				case TIMESTAMPTZOID:
 					{
-						duckdb_timestamp ts;
-						ts.micros = DatumGetInt64(val) + DUCKDB_EPOCH_DIFF_MICROS;
+						duckdb_timestamp ts = duckdb_timestamp_from_pg(DatumGetTimestamp(val));
 						state = duckdb_append_timestamp(festate->appender, ts);
 					}
 					break;
@@ -1881,6 +1901,22 @@ duckdb_date_to_pg(int32 days)
 	return (DateADT) pgdays;
 }
 
+static Timestamp
+duckdb_timestamp_to_pg(int64 micros)
+{
+	Timestamp	ts;
+
+	if (micros == -PG_INT64_MAX)
+		return DT_NOBEGIN;
+	if (micros == PG_INT64_MAX)
+		return DT_NOEND;
+	if (pg_sub_s64_overflow(micros, DUCKDB_EPOCH_DIFF_MICROS, &ts) ||
+		!IS_VALID_TIMESTAMP(ts))
+		ereport(ERROR, (errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+						errmsg("timestamp is out of range for PostgreSQL")));
+	return ts;
+}
+
 static Datum
 duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row, Oid pgtype,
                    bool *value_missing)
@@ -2080,7 +2116,7 @@ duckdbIterateForeignScan(ForeignScanState *node)
 								break;
 							case TIMESTAMPOID:
 							case TIMESTAMPTZOID:
-								dvalue = Int64GetDatum(((duckdb_timestamp *) data)[row].micros - DUCKDB_EPOCH_DIFF_MICROS);
+								dvalue = Int64GetDatum(duckdb_timestamp_to_pg(((duckdb_timestamp *) data)[row].micros));
 								break;
 							default:
 								dvalue = duckdb_value_to_pg(festate, i, festate->global_row_idx, pgtype, &value_missing);

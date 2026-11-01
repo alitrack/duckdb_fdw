@@ -71,6 +71,7 @@ SELECT duckdb_execute('duckdb_test', 'CREATE TABLE test_v2 (
     d DECIMAL(18,3), 
     dt DATE, 
     ts TIMESTAMP,
+    tz TIMESTAMPTZ,
     b BOOLEAN
 )');
  duckdb_execute 
@@ -83,6 +84,7 @@ SELECT duckdb_execute('duckdb_test', 'INSERT INTO test_v2 VALUES (
     12345.678, 
     ''2024-01-01'', 
     ''2024-01-01 12:34:56'',
+    NULL,
     true
 )');
  duckdb_execute 
@@ -95,12 +97,13 @@ CREATE FOREIGN TABLE test_v2 (
     d NUMERIC(18,3),
     dt DATE,
     ts TIMESTAMP,
+    tz TIMESTAMPTZ,
     b BOOL
 ) SERVER duckdb_test OPTIONS (table 'test_v2');
 SELECT * FROM test_v2;
-                  u                   |     d     |     dt     |            ts            | b 
---------------------------------------+-----------+------------+--------------------------+---
- 550e8400-e29b-41d4-a716-446655440000 | 12345.678 | 01-01-2024 | Mon Jan 01 12:34:56 2024 | t
+                  u                   |     d     |     dt     |            ts            | tz | b 
+--------------------------------------+-----------+------------+--------------------------+----+---
+ 550e8400-e29b-41d4-a716-446655440000 | 12345.678 | 01-01-2024 | Mon Jan 01 12:34:56 2024 |    | t
 (1 row)
 
 -- Appender API Test (INSERT)
@@ -295,6 +298,110 @@ EXECUTE date_filter(NULL);
 
 DEALLOCATE date_filter;
 RESET plan_cache_mode;
+-- Timestamp conversions
+SET TIME ZONE 'UTC';
+SELECT duckdb_execute('duckdb_test',
+    'INSERT INTO test_v2 (ts, tz) VALUES
+       (''infinity'', ''infinity''),
+       (''-infinity'', ''-infinity''),
+       (''2026-10-29 12:34:56.123456'',
+        TIMESTAMPTZ ''2026-10-29 12:34:56.123456+08'')');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+SELECT ts, tz FROM test_v2 WHERE ts IS NOT NULL ORDER BY ts;
+             ts             |              tz               
+----------------------------+-------------------------------
+ -infinity                  | -infinity
+ 2024-01-01 12:34:56        | 
+ 2026-10-29 12:34:56.123456 | 2026-10-29 04:34:56.123456+00
+ infinity                   | infinity
+(4 rows)
+
+SELECT u, ts, tz FROM test_v2 WHERE ts IS NOT NULL ORDER BY ts;
+                  u                   |             ts             |              tz               
+--------------------------------------+----------------------------+-------------------------------
+                                      | -infinity                  | -infinity
+ 550e8400-e29b-41d4-a716-446655440000 | 2024-01-01 12:34:56        | 
+                                      | 2026-10-29 12:34:56.123456 | 2026-10-29 04:34:56.123456+00
+                                      | infinity                   | infinity
+(4 rows)
+
+INSERT INTO test_v2 (ts, tz) VALUES ('-infinity', 'infinity');
+SELECT ts, tz FROM test_v2 WHERE ts IS NOT NULL ORDER BY ts, tz;
+             ts             |              tz               
+----------------------------+-------------------------------
+ -infinity                  | -infinity
+ -infinity                  | infinity
+ 2024-01-01 12:34:56        | 
+ 2026-10-29 12:34:56.123456 | 2026-10-29 04:34:56.123456+00
+ infinity                   | infinity
+(5 rows)
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE timestamp_filter(timestamp) AS
+SELECT ts FROM test_v2 WHERE ts = $1 ORDER BY ts;
+EXECUTE timestamp_filter('infinity');
+    ts    
+----------
+ infinity
+(1 row)
+
+EXECUTE timestamp_filter('-infinity');
+    ts     
+-----------
+ -infinity
+ -infinity
+(2 rows)
+
+EXECUTE timestamp_filter(NULL);
+ ts 
+----
+(0 rows)
+
+EXECUTE timestamp_filter('294247-01-10 04:00:54.775807');
+ERROR:  timestamp is out of range for DuckDB
+DEALLOCATE timestamp_filter;
+PREPARE timestamptz_filter(timestamptz) AS
+SELECT tz FROM test_v2 WHERE tz = $1 ORDER BY tz;
+EXECUTE timestamptz_filter('infinity');
+    tz    
+----------
+ infinity
+ infinity
+(2 rows)
+
+EXECUTE timestamptz_filter('-infinity');
+    tz     
+-----------
+ -infinity
+(1 row)
+
+EXECUTE timestamptz_filter('294247-01-10 04:00:54.775807+00');
+ERROR:  timestamp is out of range for DuckDB
+BEGIN;
+SELECT duckdb_execute('duckdb_test', 'SET TimeZone = ''Asia/Shanghai''');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+EXECUTE timestamptz_filter('2026-10-29 04:34:56.123456+00');
+              tz               
+-------------------------------
+ 2026-10-29 04:34:56.123456+00
+(1 row)
+
+COMMIT;
+DEALLOCATE timestamptz_filter;
+RESET plan_cache_mode;
+INSERT INTO test_v2 (ts) VALUES ('294247-01-10 04:00:54.775807');
+ERROR:  timestamp is out of range for DuckDB
+INSERT INTO test_v2 (tz) VALUES ('294247-01-10 04:00:54.775807+00');
+ERROR:  timestamp is out of range for DuckDB
+RESET TIME ZONE;
 -- Cleanup
 DROP FOREIGN TABLE test_types;
 DROP ROLE duckdb_fdw_unprivileged;
