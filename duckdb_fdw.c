@@ -208,6 +208,19 @@ duckdb_build_relation_reference(const char *table_name)
 	return duckdb_fdw_quote_identifier(table_name);
 }
 
+static duckdb_date
+duckdb_date_from_pg(DateADT value)
+{
+	duckdb_date date;
+
+	if (DATE_NOT_FINITE(value))
+		date.days = DATE_IS_NOBEGIN(value) ? -PG_INT32_MAX : PG_INT32_MAX;
+	else
+		date.days = value + DUCKDB_EPOCH_DIFF_DAYS;
+	return date;
+}
+
+
 static void
 duckdb_bind_parameter(duckdb_prepared_statement stmt, idx_t param_idx, Oid typid, Datum val, bool isnull)
 {
@@ -250,7 +263,8 @@ duckdb_bind_parameter(duckdb_prepared_statement stmt, idx_t param_idx, Oid typid
 			return;
 		case DATEOID:
 			{
-				duckdb_date date = {DatumGetDateADT(val) + DUCKDB_EPOCH_DIFF_DAYS};
+				duckdb_date date = duckdb_date_from_pg(DatumGetDateADT(val));
+
 				if (duckdb_bind_date(stmt, param_idx, date) == DuckDBError)
 					elog(ERROR, "duckdb_fdw: bind date failed at parameter %zu", (size_t) param_idx);
 				return;
@@ -721,9 +735,7 @@ duckdb_fdw_append_value(DuckDBFdwExecState *festate, int j, Datum val, Oid pgtyp
 		case DUCKFDW_WM_DATE:
 			if (pgtyp == DATEOID)
 			{
-				duckdb_date d;
-
-				d.days = DatumGetDateADT(val) + DUCKDB_EPOCH_DIFF_DAYS;
+				duckdb_date d = duckdb_date_from_pg(DatumGetDateADT(val));
 				return duckdb_append_date(festate->appender, d);
 			}
 			break;
@@ -990,7 +1002,7 @@ duckdb_append_slot_row(DuckDBFdwExecState *festate, TupleTableSlot *slot)
 					break;
 				case DATEOID:
 					{
-						duckdb_date date = {DatumGetDateADT(val) + DUCKDB_EPOCH_DIFF_DAYS};
+						duckdb_date date = duckdb_date_from_pg(DatumGetDateADT(val));
 						state = duckdb_append_date(festate->appender, date);
 					}
 					break;
@@ -1853,6 +1865,22 @@ duckdbBeginForeignScan(ForeignScanState *node, int eflags)
 	festate->is_started = true;
 }
 
+static DateADT
+duckdb_date_to_pg(int32 days)
+{
+	int64		pgdays;
+
+	if (days == -PG_INT32_MAX)
+		return DATEVAL_NOBEGIN;
+	if (days == PG_INT32_MAX)
+		return DATEVAL_NOEND;
+	pgdays = (int64) days - DUCKDB_EPOCH_DIFF_DAYS;
+	if (!IS_VALID_DATE(pgdays))
+		ereport(ERROR, (errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+						errmsg("date is out of range for PostgreSQL")));
+	return (DateADT) pgdays;
+}
+
 static Datum
 duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row, Oid pgtype,
                    bool *value_missing)
@@ -1886,7 +1914,7 @@ duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row
         case FLOAT8OID:
             return Float8GetDatum(duckdb_value_double(&festate->res, col_idx, global_row));
 	        case DATEOID:
-	            return Int32GetDatum(duckdb_value_date(&festate->res, col_idx, global_row).days - DUCKDB_EPOCH_DIFF_DAYS);
+	            return Int32GetDatum(duckdb_date_to_pg(duckdb_value_date(&festate->res, col_idx, global_row).days));
         case UUIDOID: {
             char *s = duckdb_value_varchar(&festate->res, col_idx, global_row);
             if (!s) { *value_missing = true; return (Datum)0; }
@@ -2048,7 +2076,7 @@ duckdbIterateForeignScan(ForeignScanState *node)
 								dvalue = Float8GetDatum(((double *) data)[row]);
 								break;
 							case DATEOID:
-								dvalue = Int32GetDatum(((duckdb_date *) data)[row].days - DUCKDB_EPOCH_DIFF_DAYS);
+								dvalue = Int32GetDatum(duckdb_date_to_pg(((duckdb_date *) data)[row].days));
 								break;
 							case TIMESTAMPOID:
 							case TIMESTAMPTZOID:

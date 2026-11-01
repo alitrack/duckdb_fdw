@@ -118,6 +118,26 @@ SELECT * FROM text_bracket_ft ORDER BY id;
 
 DROP FOREIGN TABLE text_bracket_ft;
 
+-- Date conversions
+SET datestyle = 'ISO, YMD';
+
+SELECT duckdb_execute('duckdb_test',
+    'INSERT INTO test_v2 (dt) VALUES (''infinity''), (''-infinity'')');
+SELECT dt FROM test_v2 ORDER BY dt;
+SELECT u, dt FROM test_v2 ORDER BY dt;
+
+INSERT INTO test_v2 (dt) VALUES ('infinity');
+SELECT dt FROM test_v2 ORDER BY dt;
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE date_filter(date) AS
+SELECT dt FROM test_v2 WHERE dt = $1 ORDER BY dt;
+EXECUTE date_filter('infinity');
+EXECUTE date_filter('-infinity');
+EXECUTE date_filter(NULL);
+DEALLOCATE date_filter;
+RESET plan_cache_mode;
+
 -- Cleanup
 DROP FOREIGN TABLE test_types;
 DROP ROLE duckdb_fdw_unprivileged;
