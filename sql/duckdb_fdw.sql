@@ -37,6 +37,7 @@ SELECT duckdb_execute('duckdb_test', 'CREATE TABLE test_v2 (
     d DECIMAL(18,3), 
     dt DATE, 
     ts TIMESTAMP,
+    tz TIMESTAMPTZ,
     b BOOLEAN
 )');
 
@@ -45,6 +46,7 @@ SELECT duckdb_execute('duckdb_test', 'INSERT INTO test_v2 VALUES (
     12345.678, 
     ''2024-01-01'', 
     ''2024-01-01 12:34:56'',
+    NULL,
     true
 )');
 
@@ -53,6 +55,7 @@ CREATE FOREIGN TABLE test_v2 (
     d NUMERIC(18,3),
     dt DATE,
     ts TIMESTAMP,
+    tz TIMESTAMPTZ,
     b BOOL
 ) SERVER duckdb_test OPTIONS (table 'test_v2');
 
@@ -117,6 +120,67 @@ CREATE FOREIGN TABLE text_bracket_ft (
 SELECT * FROM text_bracket_ft ORDER BY id;
 
 DROP FOREIGN TABLE text_bracket_ft;
+
+-- Date conversions
+SET datestyle = 'ISO, YMD';
+
+SELECT duckdb_execute('duckdb_test',
+    'INSERT INTO test_v2 (dt) VALUES (''infinity''), (''-infinity'')');
+SELECT dt FROM test_v2 ORDER BY dt;
+SELECT u, dt FROM test_v2 ORDER BY dt;
+
+INSERT INTO test_v2 (dt) VALUES ('infinity');
+SELECT dt FROM test_v2 ORDER BY dt;
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE date_filter(date) AS
+SELECT dt FROM test_v2 WHERE dt = $1 ORDER BY dt;
+EXECUTE date_filter('infinity');
+EXECUTE date_filter('-infinity');
+EXECUTE date_filter(NULL);
+DEALLOCATE date_filter;
+RESET plan_cache_mode;
+
+-- Timestamp conversions
+SET TIME ZONE 'UTC';
+
+SELECT duckdb_execute('duckdb_test',
+    'INSERT INTO test_v2 (ts, tz) VALUES
+       (''infinity'', ''infinity''),
+       (''-infinity'', ''-infinity''),
+       (''2026-10-29 12:34:56.123456'',
+        TIMESTAMPTZ ''2026-10-29 12:34:56.123456+08'')');
+SELECT ts, tz FROM test_v2 WHERE ts IS NOT NULL ORDER BY ts;
+SELECT u, ts, tz FROM test_v2 WHERE ts IS NOT NULL ORDER BY ts;
+
+INSERT INTO test_v2 (ts, tz) VALUES ('-infinity', 'infinity');
+SELECT ts, tz FROM test_v2 WHERE ts IS NOT NULL ORDER BY ts, tz;
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE timestamp_filter(timestamp) AS
+SELECT ts FROM test_v2 WHERE ts = $1 ORDER BY ts;
+EXECUTE timestamp_filter('infinity');
+EXECUTE timestamp_filter('-infinity');
+EXECUTE timestamp_filter(NULL);
+EXECUTE timestamp_filter('294247-01-10 04:00:54.775807');
+DEALLOCATE timestamp_filter;
+
+PREPARE timestamptz_filter(timestamptz) AS
+SELECT tz FROM test_v2 WHERE tz = $1 ORDER BY tz;
+EXECUTE timestamptz_filter('infinity');
+EXECUTE timestamptz_filter('-infinity');
+EXECUTE timestamptz_filter('294247-01-10 04:00:54.775807+00');
+
+BEGIN;
+SELECT duckdb_execute('duckdb_test', 'SET TimeZone = ''Asia/Shanghai''');
+EXECUTE timestamptz_filter('2026-10-29 04:34:56.123456+00');
+COMMIT;
+
+DEALLOCATE timestamptz_filter;
+RESET plan_cache_mode;
+INSERT INTO test_v2 (ts) VALUES ('294247-01-10 04:00:54.775807');
+INSERT INTO test_v2 (tz) VALUES ('294247-01-10 04:00:54.775807+00');
+RESET TIME ZONE;
 
 -- Cleanup
 DROP FOREIGN TABLE test_types;
