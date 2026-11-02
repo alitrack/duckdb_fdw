@@ -119,7 +119,7 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 						 errmsg("remote schema contains unsafe SQL fragment")));
 			remote_schema_lit = duckdb_fdw_quote_literal(stmt->remote_schema);
 	        appendStringInfo(&query, "DESCRIBE SELECT * FROM read_parquet(%s)", remote_schema_lit);
-	        if (duckdb_query(conn, query.data, &res) == DuckDBError)
+	        if (duckdb_query_checked(conn, query.data, &res) == DuckDBError)
 	        {
 	            const char *errtxt = pstrdup(duckdb_result_error(&res));
 	            duckdb_destroy_result(&res);
@@ -205,7 +205,7 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
                                  quote_identifier(stmt->remote_schema),
                                  quote_identifier(rv->relname));
 
-                if (duckdb_query(conn, desc_query.data, &col_res) == DuckDBError)
+                if (duckdb_query_checked(conn, desc_query.data, &col_res) == DuckDBError)
                 {
                     /* error text is owned by the result: copy it before destroying */
                     char *redacted = duckdb_fdw_redact_secret_text(
@@ -276,7 +276,7 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 	            quack_prefix, remote_schema_lit, remote_schema_lit);
 			pfree(remote_schema_lit);
 
-        if (duckdb_query(conn, query.data, &tables_res) == DuckDBError)
+        if (duckdb_query_checked(conn, query.data, &tables_res) == DuckDBError)
         {
             const char *errtxt = pstrdup(duckdb_result_error(&tables_res));
             duckdb_destroy_result(&tables_res);
@@ -303,7 +303,7 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
                              quack_prefix,
                              quote_identifier(dbname), quote_identifier(schname), quote_identifier(tname));
 
-	            if (duckdb_query(conn, desc_query.data, &col_res) != DuckDBError)
+	            if (duckdb_query_checked(conn, desc_query.data, &col_res) != DuckDBError)
 	            {
 					char *remote_table_pg_lit;
 					char *remote_table_name;

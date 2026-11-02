@@ -77,7 +77,6 @@ typedef struct DuckDBFdwExecState
     idx_t current_chunk_idx;
     int64_t     global_row_idx;
     bool        use_chunk_scan;
-    bool        use_prepared_stmt;
     duckdb_prepared_statement prepared_stmt;
 
 	char	   *query;
@@ -155,6 +154,14 @@ extern bool duckdb_pg_type_native_chunk(Oid pgtype);   /* PG类型可走原生�
 extern void duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level);
 extern duckdb_connection duckdb_get_connection(ForeignServer *server, bool truncatable);
 extern void duckdb_ensure_remote_xact(duckdb_connection conn);
+
+extern void duckdb_check_access(duckdb_connection conn);
+extern void duckdb_mark_xact_failed(duckdb_connection conn);
+extern bool duckdb_remote_xact_active(duckdb_connection conn);
+extern void duckdb_register_resource(MemoryContext context, void (*cleanup)(void *), void (*finish)(void *), void *arg);
+extern duckdb_state duckdb_query_checked(duckdb_connection conn, const char *sql, duckdb_result *res);
+extern duckdb_state duckdb_prepare_checked(duckdb_connection conn, const char *sql, duckdb_prepared_statement *stmt);
+extern duckdb_state duckdb_execute_checked(duckdb_connection conn, duckdb_prepared_statement stmt, duckdb_result *res);
 
 /* Helper to get cleaned C-String for BuildTupleFromCStrings */
 extern char *duckdb_extract_as_cstring(duckdb_result *res, int col, uint64_t row, Oid pgtyp);
