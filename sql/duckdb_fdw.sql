@@ -129,6 +129,18 @@ SELECT duckdb_execute('duckdb_test',
 CREATE FOREIGN TABLE blob_rows(i integer, b bytea) SERVER duckdb_test;
 SELECT i, encode(b, 'hex'), octet_length(b) FROM blob_rows ORDER BY i;
 
+-- BLOB constants must retain their type and bytes when pushed down.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT i FROM blob_rows WHERE b = '\x0000275cff'::bytea;
+SELECT i FROM blob_rows WHERE b = '\x0000275cff'::bytea;
+SELECT i FROM blob_rows WHERE b = ''::bytea;
+SELECT i FROM blob_rows WHERE b = '\xaaaa'::bytea;
+SELECT i FROM blob_rows WHERE b <> '\x0000275cff'::bytea ORDER BY i;
+SET bytea_output = 'escape';
+SELECT i FROM blob_rows WHERE b = '\x0000275cff'::bytea;
+SELECT i FROM blob_rows WHERE b = ''::bytea;
+RESET bytea_output;
+
 SELECT l.i, l.b FROM blob_rows l JOIN blob_rows r ON l.i = r.i ORDER BY l.i;
 WITH grouped AS MATERIALIZED (
     SELECT b, count(*) AS n FROM blob_rows GROUP BY b
