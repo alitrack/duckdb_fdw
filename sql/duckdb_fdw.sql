@@ -121,6 +121,30 @@ SELECT * FROM text_bracket_ft ORDER BY id;
 
 DROP FOREIGN TABLE text_bracket_ft;
 
+-- BLOB conversions
+SELECT duckdb_execute('duckdb_test',
+    'CREATE OR REPLACE TABLE blob_rows(i INTEGER, b BLOB);
+     INSERT INTO blob_rows VALUES
+       (1, from_hex(''0000275CFF'')), (2, ''''::BLOB), (3, NULL)');
+CREATE FOREIGN TABLE blob_rows(i integer, b bytea) SERVER duckdb_test;
+SELECT i, encode(b, 'hex'), octet_length(b) FROM blob_rows ORDER BY i;
+
+SELECT l.i, l.b FROM blob_rows l JOIN blob_rows r ON l.i = r.i ORDER BY l.i;
+WITH grouped AS MATERIALIZED (
+    SELECT b, count(*) AS n FROM blob_rows GROUP BY b
+)
+SELECT encode(b, 'hex'), b IS NULL, n FROM grouped ORDER BY b NULLS LAST;
+
+CREATE DOMAIN binary_value AS bytea;
+CREATE DOMAIN nested_binary_value AS binary_value;
+CREATE FOREIGN TABLE blob_domains(i integer, b nested_binary_value)
+SERVER duckdb_test OPTIONS (table 'blob_rows');
+SELECT i, encode(b, 'hex'), b IS NULL FROM blob_domains ORDER BY i;
+DROP FOREIGN TABLE blob_domains;
+DROP DOMAIN nested_binary_value, binary_value;
+DROP FOREIGN TABLE blob_rows;
+
+
 -- Date conversions
 SET datestyle = 'ISO, YMD';
 

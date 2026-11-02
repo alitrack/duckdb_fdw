@@ -306,6 +306,15 @@ duckdb_bind_parameter_value(duckdb_prepared_statement stmt, idx_t param_idx, Oid
 					elog(ERROR, "duckdb_fdw: bind timestamptz failed at parameter %zu", (size_t) param_idx);
 				return;
 			}
+		case BYTEAOID:
+			{
+				bytea	   *bytes = DatumGetByteaPP(val);
+
+				if (duckdb_bind_blob(stmt, param_idx, VARDATA_ANY(bytes),
+									 VARSIZE_ANY_EXHDR(bytes)) == DuckDBError)
+					elog(ERROR, "duckdb_fdw: bind bytea failed at parameter %zu", (size_t) param_idx);
+				return;
+			}
 		default:
 			getTypeOutputInfo(typid, &typoutput, &typisvarlena);
 			outstr = OidOutputFunctionCall(typoutput, val);

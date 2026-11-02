@@ -1595,6 +1595,13 @@ duckdb_deparse_explicit_target_list(List *tlist, List **retrieved_attrs,
         {
             duckdb_deparse_expr((Expr *) tle->expr, context);
         }
+        else if (getBaseType(expr_type) == BYTEAOID)
+        {
+            /* Match the bytea input format used by base relation scans. */
+            appendStringInfoString(buf, "('\\x' || hex(");
+            duckdb_deparse_expr((Expr *) tle->expr, context);
+            appendStringInfoString(buf, "))");
+        }
         else
         {
             appendStringInfoString(buf, "CAST(");
@@ -2126,6 +2133,13 @@ duckdb_deparse_target_list(StringInfo buf,
 			{
 				/* 定宽列(单一事实源 duckdb_pg_type_native_chunk): C API 可直接读 */
 				duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
+			}
+			else if (getBaseType(attr->atttypid) == BYTEAOID)
+			{
+				/* DuckDB's BLOB text format differs from PostgreSQL bytea. */
+				appendStringInfoString(buf, "('\\x' || hex(");
+				duckdb_deparse_column_ref(buf, rtindex, i, root, qualify_col);
+				appendStringInfoString(buf, "))");
 			}
 			else
 			{
