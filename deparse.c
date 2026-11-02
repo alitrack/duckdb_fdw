@@ -2854,16 +2854,17 @@ duckdb_deparse_const(Const *node, deparse_expr_cxt *context, int showtype)
 			break;
 
 		case BYTEAOID:
+			{
+				bytea	   *bytes = DatumGetByteaPP(node->constvalue);
+				size_t		len = VARSIZE_ANY_EXHDR(bytes);
 
-			/*
-			 * the string for BYTEA always seems to be in the format "\\x##"
-			 * where # is a hex digit, Even if the value passed in is
-			 * 'hi'::bytea we will receive "\x6869". Making this assumption
-			 * allows us to quickly convert postgres escaped strings to duckdb
-			 * ones for comparison
-			 */
-			extval = OidOutputFunctionCall(typoutput, node->constvalue);
-			appendStringInfo(buf, "X\'%s\'", extval + 2);
+				/* Encode raw bytes independently of bytea_output. */
+				extval = palloc(len * 2 + 1);
+				hex_encode(VARDATA_ANY(bytes), len, extval);
+				extval[len * 2] = '\0';
+				/* Use from_hex to produce a BLOB constant. */
+				appendStringInfo(buf, "from_hex('%s')", extval);
+			}
 			break;
 		case TIMESTAMPOID:
 			convert_timestamp_tounixepoch = false;

@@ -259,6 +259,53 @@ SELECT i, encode(b, 'hex'), octet_length(b) FROM blob_rows ORDER BY i;
  3 |            |             
 (3 rows)
 
+-- BLOB constants must retain their type and bytes when pushed down.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT i FROM blob_rows WHERE b = '\x0000275cff'::bytea;
+                                              QUERY PLAN                                              
+------------------------------------------------------------------------------------------------------
+ Foreign Scan on public.blob_rows
+   Output: i
+   Remote SQL: SELECT "i", ('\x' || hex("b")) FROM "blob_rows" WHERE (("b" = from_hex('0000275cff')))
+(3 rows)
+
+SELECT i FROM blob_rows WHERE b = '\x0000275cff'::bytea;
+ i 
+---
+ 1
+(1 row)
+
+SELECT i FROM blob_rows WHERE b = ''::bytea;
+ i 
+---
+ 2
+(1 row)
+
+SELECT i FROM blob_rows WHERE b = '\xaaaa'::bytea;
+ i 
+---
+(0 rows)
+
+SELECT i FROM blob_rows WHERE b <> '\x0000275cff'::bytea ORDER BY i;
+ i 
+---
+ 2
+(1 row)
+
+SET bytea_output = 'escape';
+SELECT i FROM blob_rows WHERE b = '\x0000275cff'::bytea;
+ i 
+---
+ 1
+(1 row)
+
+SELECT i FROM blob_rows WHERE b = ''::bytea;
+ i 
+---
+ 2
+(1 row)
+
+RESET bytea_output;
 SELECT l.i, l.b FROM blob_rows l JOIN blob_rows r ON l.i = r.i ORDER BY l.i;
  i |      b       
 ---+--------------
