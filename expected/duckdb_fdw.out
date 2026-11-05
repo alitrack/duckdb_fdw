@@ -320,6 +320,142 @@ SELECT duckdb_execute('duckdb_test', 'DROP TABLE division_inputs');
  
 (1 row)
 
+-- Cast pushdown preserves PostgreSQL operand types and precision.
+SELECT duckdb_execute('duckdb_test',
+    'CREATE OR REPLACE TABLE expression_results (i INTEGER, j SMALLINT, r FLOAT);
+     INSERT INTO expression_results VALUES (16777217, 5, 0), (NULL, NULL, NULL)');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE expression_results (i integer, j smallint, r real)
+SERVER duckdb_test;
+-- Function-call casts: float8(i) = 16777217, int4(j) = 5; count includes NULLs.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(float8(i)), min(int4(j)), count(*) FROM expression_results;
+                                                  QUERY PLAN                                                  
+--------------------------------------------------------------------------------------------------------------
+ Foreign Scan
+   Output: (sum(float8(i))), (min(int4(j))), (count(*))
+   Remote SQL: SELECT sum(CAST("i" AS DOUBLE)), min(CAST("j" AS INTEGER)), count(*) FROM "expression_results"
+(3 rows)
+
+SELECT sum(float8(i)) AS cast_sum, min(int4(j)) AS cast_min, count(*) AS rows
+FROM expression_results;
+ cast_sum | cast_min | rows 
+----------+----------+------
+ 16777217 |        5 |    2
+(1 row)
+
+-- PG promotes i to double: 0::real + 16777217 = 16777217 (FLOAT rounds to 16777216).
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(r + i) FROM expression_results;
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Foreign Scan
+   Output: (sum((r + (i)::double precision)))
+   Remote SQL: SELECT sum(("r" + CAST("i" AS DOUBLE))) FROM "expression_results"
+(3 rows)
+
+SELECT sum(r + i) AS implicit_cast_sum FROM expression_results;
+ implicit_cast_sum 
+-------------------
+          16777217
+(1 row)
+
+-- Unbounded numeric casts execute locally: both spellings return 16777217.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(i::numeric) FROM expression_results;
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Aggregate
+   Output: sum((i)::numeric)
+   ->  Foreign Scan on public.expression_results
+         Output: i, j, r
+         Remote SQL: SELECT "i" FROM "expression_results"
+(5 rows)
+
+SELECT sum(i::numeric) AS numeric_cast,
+       sum(pg_catalog.numeric(i)) AS numeric_call FROM expression_results;
+ numeric_cast | numeric_call 
+--------------+--------------
+     16777217 |     16777217
+(1 row)
+
+DROP FOREIGN TABLE expression_results;
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE expression_results');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+-- Unsupported cast pairs execute locally; timestamp-to-time still pushes down.
+SET TIME ZONE 'UTC';
+SELECT duckdb_execute('duckdb_test',
+    'CREATE OR REPLACE TABLE cast_pairs
+         (i INTEGER, tm TIME, iv INTERVAL, ts TIMESTAMP, tz TIMESTAMPTZ);
+     INSERT INTO cast_pairs VALUES
+       (1, ''02:03:04'', INTERVAL ''02:03:04'',
+        ''2024-01-02 02:03:04'', ''2024-01-02 02:03:04+00''),
+       (2, NULL, NULL, NULL, NULL)');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+CREATE FOREIGN TABLE cast_pairs
+    (i integer, tm time, iv interval, ts timestamp, tz timestamptz)
+SERVER duckdb_test;
+-- TIME -> INTERVAL executes locally and returns 2 hours 3 mins 4 secs.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT min(tm::interval) FROM cast_pairs;
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Aggregate
+   Output: min((tm)::interval)
+   ->  Foreign Scan on public.cast_pairs
+         Output: i, tm, iv, ts, tz
+         Remote SQL: SELECT CAST("tm" AS VARCHAR) FROM "cast_pairs"
+(5 rows)
+
+SELECT min(tm::interval) FROM cast_pairs;
+           min           
+-------------------------
+ @ 2 hours 3 mins 4 secs
+(1 row)
+
+-- Only ts::time pushes down; local iv::time and tz::time also match row 1.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT i FROM cast_pairs
+WHERE iv::time = time '02:03:04'
+  AND tz::time = time '02:03:04'
+  AND ts::time = time '02:03:04';
+                                                                                  QUERY PLAN                                                                                   
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Foreign Scan on public.cast_pairs
+   Output: i
+   Filter: (((cast_pairs.iv)::time without time zone = '02:03:04'::time without time zone) AND ((cast_pairs.tz)::time without time zone = '02:03:04'::time without time zone))
+   Remote SQL: SELECT "i", CAST("iv" AS VARCHAR), "ts", CAST("tz" AS VARCHAR) FROM "cast_pairs" WHERE ((CAST("ts" AS TIME) = '02:03:04'))
+(4 rows)
+
+SELECT i FROM cast_pairs
+WHERE iv::time = time '02:03:04'
+  AND tz::time = time '02:03:04'
+  AND ts::time = time '02:03:04';
+ i 
+---
+ 1
+(1 row)
+
+DROP FOREIGN TABLE cast_pairs;
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE cast_pairs');
+ duckdb_execute 
+----------------
+ 
+(1 row)
+
+RESET TIME ZONE;
 -- Regression: text values that look like DuckDB lists must be returned
 -- unchanged on read; only array-typed columns get the [..] -> {..} rewrite.
 -- (A DuckDB list round-trips as a PG array; a VARCHAR that merely starts

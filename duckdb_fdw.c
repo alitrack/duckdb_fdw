@@ -1950,6 +1950,52 @@ duckdb_timestamp_to_pg(int64 micros)
 	return ts;
 }
 
+/* PostgreSQL types with a supported DuckDB CAST spelling. */
+typedef struct DuckDBPgType
+{
+	Oid			pgtype;
+	const char *cast_type;
+} DuckDBPgType;
+
+static const DuckDBPgType duckdb_pg_types[] = {
+	{BOOLOID, "BOOLEAN"},
+	{INT2OID, "SMALLINT"},
+	{INT4OID, "INTEGER"},
+	{INT8OID, "BIGINT"},
+	{FLOAT4OID, "FLOAT"},
+	{FLOAT8OID, "DOUBLE"},
+	{DATEOID, "DATE"},
+	{TIMEOID, "TIME"},
+	{TIMETZOID, "TIMETZ"},
+	{TIMESTAMPOID, "TIMESTAMP"},
+	{TIMESTAMPTZOID, "TIMESTAMPTZ"},
+	{INTERVALOID, "INTERVAL"},
+	{UUIDOID, NULL},
+	{BYTEAOID, NULL},
+	{TEXTOID, "VARCHAR"},
+	{VARCHAROID, "VARCHAR"}
+};
+
+static const DuckDBPgType *
+duckdb_pg_type(Oid pgtype)
+{
+	int i;
+
+	for (i = 0; i < lengthof(duckdb_pg_types); i++)
+		if (duckdb_pg_types[i].pgtype == pgtype)
+			return &duckdb_pg_types[i];
+	return NULL;
+}
+
+const char *
+duckdb_pg_cast_type(Oid pgtype)
+{
+	const DuckDBPgType *type = duckdb_pg_type(pgtype);
+
+	return type ? type->cast_type : NULL;
+}
+
+
 static Datum
 duckdb_value_to_pg(DuckDBFdwExecState *festate, int col_idx, uint64_t global_row, Oid pgtype,
                    bool *value_missing)
