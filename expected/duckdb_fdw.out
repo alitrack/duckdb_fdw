@@ -134,11 +134,11 @@ LINE 2: SELECT stddev(i), variance(j), log(d) FROM test_types GROUP ...
                                            ^
 -- Filter pushdown test
 EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM test_types WHERE i = 1;
-                                          QUERY PLAN                                          
-----------------------------------------------------------------------------------------------
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
  Foreign Scan on public.test_types
    Output: i, j, d, s
-   Remote SQL: SELECT "i", "j", "d", CAST("s" AS VARCHAR) FROM "test_types" WHERE (("i" = 1))
+   Remote SQL: SELECT "i", "j", "d", CAST("s" AS VARCHAR) FROM "test_types" WHERE (("i" = CAST(1 AS INTEGER)))
 (3 rows)
 
 SELECT * FROM test_types WHERE i = 1;
@@ -220,11 +220,11 @@ SERVER duckdb_test;
 -- bigint / integer: sum(i) = 3, so division by 2 and -2 gives 1 and -1.
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT sum(i) / 2 FROM division_inputs;
-                         QUERY PLAN                          
--------------------------------------------------------------
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
  Foreign Scan
    Output: ((sum(i) / 2))
-   Remote SQL: SELECT (sum("i") // 2) FROM "division_inputs"
+   Remote SQL: SELECT (sum("i") // CAST(2 AS INTEGER)) FROM "division_inputs"
 (3 rows)
 
 SELECT sum(i) / 2 AS positive_divisor, sum(i) / (-2) AS negative_divisor
@@ -245,11 +245,11 @@ SELECT min(j / 2) AS min_div, max(j / 2) AS max_div,
 -- Floating-point division keeps /: sum(r) = 1, so 1 / 2 = 0.5.
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT sum(r) / 2::real FROM division_inputs;
-                                 QUERY PLAN                                  
------------------------------------------------------------------------------
+                                         QUERY PLAN                                         
+--------------------------------------------------------------------------------------------
  Foreign Scan
    Output: ((sum(r) / '2'::real))
-   Remote SQL: SELECT CAST((sum("r") / 2) AS VARCHAR) FROM "division_inputs"
+   Remote SQL: SELECT CAST((sum("r") / CAST(2 AS FLOAT)) AS VARCHAR) FROM "division_inputs"
 (3 rows)
 
 SELECT sum(r) / 2::real AS real_div FROM division_inputs;
@@ -263,11 +263,11 @@ CREATE DOMAIN division_integer AS integer;
 CREATE DOMAIN nested_division_integer AS division_integer;
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT sum(i::nested_division_integer / 2) FROM division_inputs;
-                         QUERY PLAN                          
--------------------------------------------------------------
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
  Foreign Scan
    Output: (sum((i / 2)))
-   Remote SQL: SELECT sum(("i" // 2)) FROM "division_inputs"
+   Remote SQL: SELECT sum(("i" // CAST(2 AS INTEGER))) FROM "division_inputs"
 (3 rows)
 
 SELECT sum(i::nested_division_integer / 2) AS domain_div FROM division_inputs;
@@ -313,6 +313,46 @@ SELECT i FROM division_inputs WHERE i / (j - j) > 0;
 WITH scanned AS MATERIALIZED (SELECT i, j FROM division_inputs)
 SELECT i FROM scanned WHERE i / (j - j) > 0;
 ERROR:  division by zero
+-- Constants retain their PostgreSQL types in remote expressions.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT min(j + 1), count(*) FROM division_inputs;
+                                      QUERY PLAN                                       
+---------------------------------------------------------------------------------------
+ Foreign Scan
+   Output: (min((j + 1))), (count(*))
+   Remote SQL: SELECT min(("j" + CAST(1 AS INTEGER))), count(*) FROM "division_inputs"
+(3 rows)
+
+SELECT min(j + 1), count(*) FROM division_inputs;
+ min | count 
+-----+-------
+  -4 |     3
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT CASE WHEN i > 1 THEN true ELSE false END AS b, count(*)
+FROM division_inputs GROUP BY 1;
+                                                           QUERY PLAN                                                            
+---------------------------------------------------------------------------------------------------------------------------------
+ Foreign Scan
+   Output: (CASE WHEN (i > 1) THEN true ELSE false END), (count(*))
+   Remote SQL: SELECT CASE  WHEN ("i" > CAST(1 AS INTEGER)) THEN TRUE ELSE FALSE END, count(*) FROM "division_inputs" GROUP BY 1
+(3 rows)
+
+WITH grouped AS MATERIALIZED (
+    SELECT CASE WHEN i > 1 THEN true ELSE false END AS b,
+           CASE WHEN i > 1 THEN date '2024-01-02' ELSE NULL::date END AS d,
+           CASE WHEN i > 1 THEN time '12:34:56' ELSE time '01:02:03' END AS tm,
+           count(*)
+    FROM division_inputs GROUP BY 1, 2, 3
+)
+SELECT * FROM grouped ORDER BY b;
+ b |     d      |    tm    | count 
+---+------------+----------+-------
+ f |            | 01:02:03 |     2
+ t | 01-02-2024 | 12:34:56 |     1
+(2 rows)
+
 DROP FOREIGN TABLE division_inputs;
 SELECT duckdb_execute('duckdb_test', 'DROP TABLE division_inputs');
  duckdb_execute 
@@ -436,7 +476,7 @@ WHERE iv::time = time '02:03:04'
  Foreign Scan on public.cast_pairs
    Output: i
    Filter: (((cast_pairs.iv)::time without time zone = '02:03:04'::time without time zone) AND ((cast_pairs.tz)::time without time zone = '02:03:04'::time without time zone))
-   Remote SQL: SELECT "i", CAST("iv" AS VARCHAR), "ts", CAST("tz" AS VARCHAR) FROM "cast_pairs" WHERE ((CAST("ts" AS TIME) = '02:03:04'))
+   Remote SQL: SELECT "i", CAST("iv" AS VARCHAR), "ts", CAST("tz" AS VARCHAR) FROM "cast_pairs" WHERE ((CAST("ts" AS TIME) = CAST('02:03:04' AS TIME)))
 (4 rows)
 
 SELECT i FROM cast_pairs
@@ -625,6 +665,42 @@ SELECT i, encode(b, 'hex'), b IS NULL FROM blob_domains ORDER BY i;
 DROP FOREIGN TABLE blob_domains;
 DROP DOMAIN nested_binary_value, binary_value;
 DROP FOREIGN TABLE blob_rows;
+-- Native temporal parameters retain their types, including all-NULL results.
+SET plan_cache_mode = force_generic_plan;
+PREPARE temporal_case(time, time, timestamp, timestamp,
+                      timestamptz, timestamptz) AS
+WITH grouped AS MATERIALIZED (
+    SELECT CASE WHEN i = 1 THEN $1 ELSE $2 END AS tm,
+           CASE WHEN i = 1 THEN $3 ELSE $4 END AS ts,
+           CASE WHEN i = 1 THEN $5 ELSE $6 END AS tz,
+           count(*)
+    FROM test_types GROUP BY 1, 2, 3
+)
+SELECT * FROM grouped ORDER BY 1;
+EXECUTE temporal_case(
+    '01:02:03.123456', '23:59:59.999999', NULL, NULL, NULL, NULL);
+       tm        | ts | tz | count 
+-----------------+----+----+-------
+ 01:02:03.123456 |    |    |     1
+ 23:59:59.999999 |    |    |     9
+(2 rows)
+
+EXECUTE temporal_case(
+    NULL, '23:59:59.999999', NULL, NULL, NULL, NULL);
+       tm        | ts | tz | count 
+-----------------+----+----+-------
+ 23:59:59.999999 |    |    |     9
+                 |    |    |     1
+(2 rows)
+
+EXECUTE temporal_case(NULL, NULL, NULL, NULL, NULL, NULL);
+ tm | ts | tz | count 
+----+----+----+-------
+    |    |    |    10
+(1 row)
+
+DEALLOCATE temporal_case;
+RESET plan_cache_mode;
 -- Date conversions
 SET datestyle = 'ISO, YMD';
 SELECT duckdb_execute('duckdb_test',

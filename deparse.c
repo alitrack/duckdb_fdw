@@ -1636,6 +1636,9 @@ duckdb_deparse_explicit_target_list(List *tlist, List **retrieved_attrs,
 	ListCell   *lc;
 	StringInfo	buf = context->buf;
 	int			i = 0;
+	int			nestlevel;
+
+	nestlevel = duckdb_set_transmission_modes();
 
 	*retrieved_attrs = NIL;
 
@@ -1682,6 +1685,8 @@ duckdb_deparse_explicit_target_list(List *tlist, List **retrieved_attrs,
 
 	if (i == 0)
 		appendStringInfoString(buf, "NULL");
+
+	duckdb_reset_transmission_modes(nestlevel);
 }
 
 
@@ -2870,10 +2875,32 @@ duckdb_deparse_const(Const *node, deparse_expr_cxt *context, int showtype)
 	char	   *duckdbcolumntype;
 	bool		convert_timestamp_tounixepoch;
 	Var		   *varnode;
+	const char *cast_type = NULL;
+	char		category;
+	bool		preferred;
+
+	/* Preserve operand types when DuckDB binds literals in expressions. */
+	get_type_category_preferred(node->consttype, &category, &preferred);
+	if (category == TYPCATEGORY_NUMERIC ||
+		node->consttype == DATEOID || node->consttype == TIMEOID ||
+		node->consttype == TIMETZOID || node->consttype == TIMESTAMPOID ||
+		node->consttype == TIMESTAMPTZOID)
+		cast_type = duckdb_pg_cast_type(node->consttype);
+	else if (node->consttype == UUIDOID)
+		cast_type = "UUID";
+	else if (node->constisnull && node->consttype == BOOLOID)
+		cast_type = "BOOLEAN";
+	else if (node->constisnull && node->consttype == BYTEAOID)
+		cast_type = "BLOB";
+
+	if (cast_type != NULL)
+		appendStringInfoString(buf, "CAST(");
 
 	if (node->constisnull)
 	{
 		appendStringInfoString(buf, "NULL");
+		if (cast_type != NULL)
+			appendStringInfo(buf, " AS %s)", cast_type);
 		return;
 	}
 
@@ -2913,11 +2940,8 @@ duckdb_deparse_const(Const *node, deparse_expr_cxt *context, int showtype)
 			appendStringInfo(buf, "B\'%s\'", extval);
 			break;
 		case BOOLOID:
-			extval = OidOutputFunctionCall(typoutput, node->constvalue);
-			if (strcmp(extval, "t") == 0)
-				appendStringInfoString(buf, "1");
-			else
-				appendStringInfoString(buf, "0");
+			appendStringInfoString(buf,
+								   DatumGetBool(node->constvalue) ? "TRUE" : "FALSE");
 			break;
 
 		case BYTEAOID:
@@ -2960,6 +2984,8 @@ duckdb_deparse_const(Const *node, deparse_expr_cxt *context, int showtype)
 			duckdb_deparse_string_literal(buf, extval);
 			break;
 	}
+	if (cast_type != NULL)
+		appendStringInfo(buf, " AS %s)", cast_type);
 }
 
 /*
@@ -3575,18 +3601,20 @@ duckdb_deparse_minmax_expr(MinMaxExpr *node, deparse_expr_cxt *context)
 /*
  * Print the representation of a parameter to be sent to the remote side.
  *
- * Note: we always label the Param's type explicitly rather than relying on
- * transmitting a numeric type OID in PQexecParams().  This allows us to
- * avoid assuming that types have the same OIDs on the remote side as they
- * do locally --- they need only have the same names.
+ * Preserve mapped parameter types even when binding NULL, so DuckDB can
+ * determine expression result types independently of parameter values.
  */
 static void
 duckdb_print_remote_param(int paramindex, Oid paramtype, int32 paramtypmod,
 						  deparse_expr_cxt *context)
 {
 	StringInfo	buf = context->buf;
+	const char *cast_type = duckdb_pg_cast_type(paramtype);
 
-	appendStringInfo(buf, "?");
+	if (cast_type != NULL)
+		appendStringInfo(buf, "CAST(? AS %s)", cast_type);
+	else
+		appendStringInfoString(buf, "?");
 }
 
 static void
