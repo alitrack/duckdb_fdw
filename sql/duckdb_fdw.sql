@@ -103,6 +103,57 @@ DROP SERVER duckdb_switch CASCADE;
 UPDATE test_types SET s = 'changed' WHERE i = 1;
 DELETE FROM test_types WHERE i = 1;
 
+-- Division pushdown: integer division truncates; real and numeric keep fractions.
+SELECT duckdb_execute('duckdb_test',
+    'CREATE OR REPLACE TABLE division_inputs (i INTEGER, j SMALLINT, r FLOAT);
+     INSERT INTO division_inputs VALUES (5, -5, 1), (-2, 5, 0),
+                                       (NULL, NULL, NULL)');
+CREATE FOREIGN TABLE division_inputs (i integer, j smallint, r real)
+SERVER duckdb_test;
+
+-- bigint / integer: sum(i) = 3, so division by 2 and -2 gives 1 and -1.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(i) / 2 FROM division_inputs;
+SELECT sum(i) / 2 AS positive_divisor, sum(i) / (-2) AS negative_divisor
+FROM division_inputs;
+
+-- smallint / integer and smallint / smallint: -5 / 2 = -2, 5 / 2 = 2.
+SELECT min(j / 2) AS min_div, max(j / 2) AS max_div,
+       min(j / 2::smallint) AS smallint_div FROM division_inputs;
+
+-- Floating-point division keeps /: sum(r) = 1, so 1 / 2 = 0.5.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(r) / 2::real FROM division_inputs;
+SELECT sum(r) / 2::real AS real_div FROM division_inputs;
+
+-- Nested integer domains resolve to the built-in integer division operator.
+CREATE DOMAIN division_integer AS integer;
+CREATE DOMAIN nested_division_integer AS division_integer;
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(i::nested_division_integer / 2) FROM division_inputs;
+SELECT sum(i::nested_division_integer / 2) AS domain_div FROM division_inputs;
+DROP DOMAIN nested_division_integer;
+DROP DOMAIN division_integer;
+
+-- PG numeric over a DuckDB INTEGER keeps /: 5 / 2 = 2.5.
+CREATE FOREIGN TABLE numeric_division(i numeric)
+SERVER duckdb_test OPTIONS (table 'division_inputs');
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(i / 2) FROM numeric_division WHERE i = 5;
+SELECT sum(i / 2) AS numeric_div FROM numeric_division WHERE i = 5;
+DROP FOREIGN TABLE numeric_division;
+
+-- Remote division by zero yields NULL: the aggregate is NULL, the filter matches no rows.
+SELECT max(i / (j - j)) AS zero_div FROM division_inputs;
+SELECT i FROM division_inputs WHERE i / (j - j) > 0;
+
+-- MATERIALIZED makes PG evaluate the division locally and raise division by zero.
+WITH scanned AS MATERIALIZED (SELECT i, j FROM division_inputs)
+SELECT i FROM scanned WHERE i / (j - j) > 0;
+
+DROP FOREIGN TABLE division_inputs;
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE division_inputs');
+
 -- Regression: text values that look like DuckDB lists must be returned
 -- unchanged on read; only array-typed columns get the [..] -> {..} rewrite.
 -- (A DuckDB list round-trips as a PG array; a VARCHAR that merely starts
@@ -155,7 +206,6 @@ SELECT i, encode(b, 'hex'), b IS NULL FROM blob_domains ORDER BY i;
 DROP FOREIGN TABLE blob_domains;
 DROP DOMAIN nested_binary_value, binary_value;
 DROP FOREIGN TABLE blob_rows;
-
 
 -- Date conversions
 SET datestyle = 'ISO, YMD';

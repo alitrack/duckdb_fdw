@@ -3089,7 +3089,14 @@ duckdb_deparse_operator_name(StringInfo buf, Form_pg_operator opform)
 	}
 	else
 	{
-		if (strcmp(cur_opname, "~~") == 0)
+		if (strcmp(cur_opname, "/") == 0 &&
+			(opform->oprresult == INT2OID || opform->oprresult == INT4OID ||
+			 opform->oprresult == INT8OID))
+		{
+			/* DuckDB integer division truncates toward zero. */
+			appendStringInfoString(buf, "//");
+		}
+		else if (strcmp(cur_opname, "~~") == 0)
 		{
 			appendStringInfoString(buf, "LIKE");
 		}
