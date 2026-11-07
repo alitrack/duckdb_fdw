@@ -17,6 +17,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/clauses.h"
 #include "parser/parsetree.h"
+#include "parser/parse_coerce.h"
 #include "utils/lsyscache.h"
 
 #include "pgtime.h"
@@ -472,6 +473,66 @@ duckdb_is_valid_type(Oid type)
 	return false;
 }
 
+/* Recognize both cast syntax and calls to catalogued cast functions. */
+static bool
+duckdb_is_cast(FuncExpr *func)
+{
+	Oid castfunc;
+	CoercionPathType path;
+
+	if (func->funcformat == COERCE_IMPLICIT_CAST ||
+		func->funcformat == COERCE_EXPLICIT_CAST)
+		return true;
+	if (func->args == NIL)
+		return false;
+	path = find_coercion_pathway(func->funcresulttype,
+								exprType(linitial(func->args)),
+								COERCION_EXPLICIT, &castfunc);
+	return path == COERCION_PATH_FUNC && castfunc == func->funcid;
+}
+
+/* Allow only source/target combinations implemented by DuckDB. */
+static bool
+duckdb_is_supported_cast(Oid source, Oid target)
+{
+	/*
+	 * Require a mapped target and a known source representation.  Numeric
+	 * sources can be cast to mapped types; unbounded numeric targets stay local.
+	 */
+	source = getBaseType(source);
+	if (duckdb_pg_cast_type(target) == NULL ||
+		(duckdb_pg_cast_type(source) == NULL && source != NUMERICOID))
+		return false;
+
+	/* Mapped types support identity and text conversions. */
+	if (source == target ||
+		source == TEXTOID || source == VARCHAROID ||
+		target == TEXTOID || target == VARCHAROID)
+		return true;
+
+	/* DuckDB supports casts within the mapped boolean/numeric family. */
+	if (source == BOOLOID || TypeCategory(source) == TYPCATEGORY_NUMERIC)
+		return target == BOOLOID || TypeCategory(target) == TYPCATEGORY_NUMERIC;
+
+	/* Temporal casts need pair checks: TIME and INTERVAL cannot interconvert. */
+	switch (source)
+	{
+		case DATEOID:
+			return target == TIMESTAMPOID || target == TIMESTAMPTZOID;
+		case TIMEOID:
+		case TIMETZOID:
+			return target == TIMEOID || target == TIMETZOID;
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			/* Only a timestamp without time zone can be cast to TIME. */
+			return target == DATEOID || target == TIMETZOID ||
+				   target == TIMESTAMPOID || target == TIMESTAMPTZOID ||
+				   (source == TIMESTAMPOID && target == TIMEOID);
+		default:
+			return false;
+	}
+}
+
 /*
  * Check if expression is safe to execute remotely, and return true if so.
  *
@@ -612,6 +673,7 @@ duckdb_foreign_expr_walker(Node *node,
 				FuncExpr   *func = (FuncExpr *) node;
 				char	   *opername = NULL;
 				Oid			schema;
+				bool		is_cast = duckdb_is_cast(func);
 
 				/* get function name and schema */
 				tuple = SearchSysCache1(PROCOID, ObjectIdGetDatum(func->funcid));
@@ -628,6 +690,21 @@ duckdb_foreign_expr_walker(Node *node,
 					return false;
 
 				/*
+				 * The deparser emits CAST(arg AS type) using only the first
+				 * argument and a type name without modifiers.  PG passes typmod
+				 * information in extra arguments to coercion functions; keep
+				 * those casts local until we can translate the modifiers and
+				 * preserve their precision, rounding and length semantics.
+				 */
+				if (is_cast)
+				{
+					if (list_length(func->args) != 1 ||
+						!duckdb_is_supported_cast(exprType(linitial(func->args)),
+												  func->funcresulttype))
+						return false;
+				}
+
+				/*
 				 * These function can be passed to DuckDB. In case of nest
 				 * functions, for example, (round(abs(c1), 0) = 1, the
 				 * postgres core will transform to
@@ -639,7 +716,7 @@ duckdb_foreign_expr_walker(Node *node,
 				 * character, so we don't push down these functions.
 				 *
 				 */
-				if (!(func->funcformat == COERCE_IMPLICIT_CAST
+				if (!(is_cast
 					  || strcmp(opername, "abs") == 0
 					  || strcmp(opername, "floor") == 0
 					  || strcmp(opername, "ceil") == 0
@@ -666,16 +743,7 @@ duckdb_foreign_expr_walker(Node *node,
                       || strcmp(opername, "exp") == 0
                       || strcmp(opername, "sign") == 0
                       || strcmp(opername, "ln") == 0
-                      || strcmp(opername, "log") == 0
-                      /* Type Casts */
-                      || strcmp(opername, "int4") == 0
-                      || strcmp(opername, "int8") == 0
-                      || strcmp(opername, "float4") == 0
-                      || strcmp(opername, "float8") == 0
-                      || strcmp(opername, "numeric") == 0
-                      || strcmp(opername, "text") == 0
-                      || strcmp(opername, "date") == 0
-                      || strcmp(opername, "timestamp") == 0))
+                      || strcmp(opername, "log") == 0))
 				{
 					return false;
 				}
@@ -2960,13 +3028,15 @@ duckdb_deparse_func_expr(FuncExpr *node, deparse_expr_cxt *context)
 	bool		first;
 	ListCell   *arg;
 
-	/*
-	 * If the function call came from an implicit coercion, then just show the
-	 * first argument.
-	 */
-	if (node->funcformat == COERCE_IMPLICIT_CAST)
+	/* Preserve the coercions PostgreSQL inserted while resolving operators. */
+	if (duckdb_is_cast(node))
 	{
+		const char *type = duckdb_pg_cast_type(node->funcresulttype);
+
+		Assert(type != NULL && list_length(node->args) == 1);
+		appendStringInfoString(buf, "CAST(");
 		duckdb_deparse_expr((Expr *) linitial(node->args), context);
+		appendStringInfo(buf, " AS %s)", type);
 		return;
 	}
 
@@ -2977,25 +3047,6 @@ duckdb_deparse_func_expr(FuncExpr *node, deparse_expr_cxt *context)
 	if (!HeapTupleIsValid(proctup))
 		elog(ERROR, "cache lookup failed for function %u", node->funcid);
 	procform = (Form_pg_proc) GETSTRUCT(proctup);
-
-    proname = NameStr(procform->proname);
-
-    /* Handle type casts that look like functions in PG */
-    if (strcmp(proname, "numeric") == 0 || 
-        strcmp(proname, "int4") == 0 || 
-        strcmp(proname, "int8") == 0 || 
-        strcmp(proname, "float4") == 0 || 
-        strcmp(proname, "float8") == 0 || 
-        strcmp(proname, "text") == 0 ||
-        strcmp(proname, "date") == 0 ||
-        strcmp(proname, "timestamp") == 0)
-    {
-        appendStringInfoString(buf, "CAST(");
-        duckdb_deparse_expr((Expr *) linitial(node->args), context);
-        appendStringInfo(buf, " AS %s)", (strcmp(proname, "text") == 0 ? "VARCHAR" : proname));
-        ReleaseSysCache(proctup);
-        return;
-    }
 
 	/* Translate PostgreSQL function into duckdb function */
 	proname = duckdb_replace_function(NameStr(procform->proname));
