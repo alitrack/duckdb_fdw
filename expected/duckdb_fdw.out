@@ -448,6 +448,40 @@ WHERE iv::time = time '02:03:04'
  1
 (1 row)
 
+-- Zoned casts use PostgreSQL's session time zone and execute locally.
+\pset format unaligned
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT i FROM cast_pairs
+WHERE ts::timestamptz = timestamptz '2024-01-02 02:03:04+00'
+  AND ts::date::timestamptz = timestamptz '2024-01-02 00:00:00+00'
+  AND tz::timestamp = timestamp '2024-01-02 02:03:04'
+  AND tz::date = date '2024-01-02'
+  AND tm::timetz = timetz '02:03:04+00'
+  AND tm::timetz::time = time '02:03:04';
+QUERY PLAN
+Foreign Scan on public.cast_pairs
+  Output: i
+  Filter: (((cast_pairs.ts)::timestamp with time zone = 'Tue Jan 02 02:03:04 2024 UTC'::timestamp with time zone) AND (((cast_pairs.ts)::date)::timestamp with time zone = 'Tue Jan 02 00:00:00 2024 UTC'::timestamp with time zone) AND ((cast_pairs.tz)::timestamp without time zone = 'Tue Jan 02 02:03:04 2024'::timestamp without time zone) AND ((cast_pairs.tz)::date = '01-02-2024'::date) AND ((cast_pairs.tm)::time with time zone = '02:03:04+00'::time with time zone) AND (((cast_pairs.tm)::time with time zone)::time without time zone = '02:03:04'::time without time zone))
+  Remote SQL: SELECT "i", CAST("tm" AS VARCHAR), "ts", CAST("tz" AS VARCHAR) FROM "cast_pairs"
+(4 rows)
+SELECT i FROM cast_pairs
+WHERE ts::timestamptz = timestamptz '2024-01-02 02:03:04+00'
+  AND ts::date::timestamptz = timestamptz '2024-01-02 00:00:00+00'
+  AND tz::timestamp = timestamp '2024-01-02 02:03:04'
+  AND tz::date = date '2024-01-02'
+  AND tm::timetz = timetz '02:03:04+00'
+  AND tm::timetz::time = time '02:03:04';
+i
+1
+(1 row)
+SET TIME ZONE 'Asia/Shanghai';
+SELECT count(*) FROM cast_pairs
+WHERE ts::timestamptz = timestamptz '2024-01-02 02:03:04+08';
+count
+1
+(1 row)
+SET TIME ZONE 'UTC';
+\pset format aligned
 DROP FOREIGN TABLE cast_pairs;
 SELECT duckdb_execute('duckdb_test', 'DROP TABLE cast_pairs');
  duckdb_execute 

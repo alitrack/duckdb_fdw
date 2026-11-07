@@ -210,6 +210,30 @@ WHERE iv::time = time '02:03:04'
   AND tz::time = time '02:03:04'
   AND ts::time = time '02:03:04';
 
+-- Zoned casts use PostgreSQL's session time zone and execute locally.
+\pset format unaligned
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT i FROM cast_pairs
+WHERE ts::timestamptz = timestamptz '2024-01-02 02:03:04+00'
+  AND ts::date::timestamptz = timestamptz '2024-01-02 00:00:00+00'
+  AND tz::timestamp = timestamp '2024-01-02 02:03:04'
+  AND tz::date = date '2024-01-02'
+  AND tm::timetz = timetz '02:03:04+00'
+  AND tm::timetz::time = time '02:03:04';
+SELECT i FROM cast_pairs
+WHERE ts::timestamptz = timestamptz '2024-01-02 02:03:04+00'
+  AND ts::date::timestamptz = timestamptz '2024-01-02 00:00:00+00'
+  AND tz::timestamp = timestamp '2024-01-02 02:03:04'
+  AND tz::date = date '2024-01-02'
+  AND tm::timetz = timetz '02:03:04+00'
+  AND tm::timetz::time = time '02:03:04';
+
+SET TIME ZONE 'Asia/Shanghai';
+SELECT count(*) FROM cast_pairs
+WHERE ts::timestamptz = timestamptz '2024-01-02 02:03:04+08';
+SET TIME ZONE 'UTC';
+\pset format aligned
+
 DROP FOREIGN TABLE cast_pairs;
 SELECT duckdb_execute('duckdb_test', 'DROP TABLE cast_pairs');
 RESET TIME ZONE;

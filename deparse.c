@@ -504,6 +504,12 @@ duckdb_is_supported_cast(Oid source, Oid target)
 		(duckdb_pg_cast_type(source) == NULL && source != NUMERICOID))
 		return false;
 
+	/* Zoned conversions depend on the session time zone and engine semantics. */
+	if (source != target &&
+		(source == TIMESTAMPTZOID || target == TIMESTAMPTZOID ||
+		 source == TIMETZOID || target == TIMETZOID))
+		return false;
+
 	/* Mapped types support identity and text conversions. */
 	if (source == target ||
 		source == TEXTOID || source == VARCHAROID ||
@@ -518,16 +524,9 @@ duckdb_is_supported_cast(Oid source, Oid target)
 	switch (source)
 	{
 		case DATEOID:
-			return target == TIMESTAMPOID || target == TIMESTAMPTZOID;
-		case TIMEOID:
-		case TIMETZOID:
-			return target == TIMEOID || target == TIMETZOID;
+			return target == TIMESTAMPOID;
 		case TIMESTAMPOID:
-		case TIMESTAMPTZOID:
-			/* Only a timestamp without time zone can be cast to TIME. */
-			return target == DATEOID || target == TIMETZOID ||
-				   target == TIMESTAMPOID || target == TIMESTAMPTZOID ||
-				   (source == TIMESTAMPOID && target == TIMEOID);
+			return target == DATEOID || target == TIMEOID;
 		default:
 			return false;
 	}
