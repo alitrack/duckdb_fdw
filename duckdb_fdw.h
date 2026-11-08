@@ -149,6 +149,7 @@ extern bool duckdb_fdw_sql_is_readonly(const char *sql);
  * duckdb_chunk_types_ok()'s runtime DuckDB-type check.
  */
 extern bool duckdb_pg_type_native_chunk(Oid pgtype);   /* PG类型可走原生定宽 */
+extern const char *duckdb_pg_cast_type(Oid pgtype);
 
 /* Internal functions */
 extern void duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level);

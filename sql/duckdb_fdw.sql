@@ -154,6 +154,90 @@ SELECT i FROM scanned WHERE i / (j - j) > 0;
 DROP FOREIGN TABLE division_inputs;
 SELECT duckdb_execute('duckdb_test', 'DROP TABLE division_inputs');
 
+-- Cast pushdown preserves PostgreSQL operand types and precision.
+SELECT duckdb_execute('duckdb_test',
+    'CREATE OR REPLACE TABLE expression_results (i INTEGER, j SMALLINT, r FLOAT);
+     INSERT INTO expression_results VALUES (16777217, 5, 0), (NULL, NULL, NULL)');
+CREATE FOREIGN TABLE expression_results (i integer, j smallint, r real)
+SERVER duckdb_test;
+
+-- Function-call casts: float8(i) = 16777217, int4(j) = 5; count includes NULLs.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(float8(i)), min(int4(j)), count(*) FROM expression_results;
+SELECT sum(float8(i)) AS cast_sum, min(int4(j)) AS cast_min, count(*) AS rows
+FROM expression_results;
+
+-- PG promotes i to double: 0::real + 16777217 = 16777217 (FLOAT rounds to 16777216).
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(r + i) FROM expression_results;
+SELECT sum(r + i) AS implicit_cast_sum FROM expression_results;
+
+-- Unbounded numeric casts execute locally: both spellings return 16777217.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT sum(i::numeric) FROM expression_results;
+SELECT sum(i::numeric) AS numeric_cast,
+       sum(pg_catalog.numeric(i)) AS numeric_call FROM expression_results;
+
+DROP FOREIGN TABLE expression_results;
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE expression_results');
+
+-- Unsupported cast pairs execute locally; timestamp-to-time still pushes down.
+SET TIME ZONE 'UTC';
+SELECT duckdb_execute('duckdb_test',
+    'CREATE OR REPLACE TABLE cast_pairs
+         (i INTEGER, tm TIME, iv INTERVAL, ts TIMESTAMP, tz TIMESTAMPTZ);
+     INSERT INTO cast_pairs VALUES
+       (1, ''02:03:04'', INTERVAL ''02:03:04'',
+        ''2024-01-02 02:03:04'', ''2024-01-02 02:03:04+00''),
+       (2, NULL, NULL, NULL, NULL)');
+CREATE FOREIGN TABLE cast_pairs
+    (i integer, tm time, iv interval, ts timestamp, tz timestamptz)
+SERVER duckdb_test;
+
+-- TIME -> INTERVAL executes locally and returns 2 hours 3 mins 4 secs.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT min(tm::interval) FROM cast_pairs;
+SELECT min(tm::interval) FROM cast_pairs;
+
+-- Only ts::time pushes down; local iv::time and tz::time also match row 1.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT i FROM cast_pairs
+WHERE iv::time = time '02:03:04'
+  AND tz::time = time '02:03:04'
+  AND ts::time = time '02:03:04';
+SELECT i FROM cast_pairs
+WHERE iv::time = time '02:03:04'
+  AND tz::time = time '02:03:04'
+  AND ts::time = time '02:03:04';
+
+-- Zoned casts use PostgreSQL's session time zone and execute locally.
+\pset format unaligned
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT i FROM cast_pairs
+WHERE ts::timestamptz = timestamptz '2024-01-02 02:03:04+00'
+  AND ts::date::timestamptz = timestamptz '2024-01-02 00:00:00+00'
+  AND tz::timestamp = timestamp '2024-01-02 02:03:04'
+  AND tz::date = date '2024-01-02'
+  AND tm::timetz = timetz '02:03:04+00'
+  AND tm::timetz::time = time '02:03:04';
+SELECT i FROM cast_pairs
+WHERE ts::timestamptz = timestamptz '2024-01-02 02:03:04+00'
+  AND ts::date::timestamptz = timestamptz '2024-01-02 00:00:00+00'
+  AND tz::timestamp = timestamp '2024-01-02 02:03:04'
+  AND tz::date = date '2024-01-02'
+  AND tm::timetz = timetz '02:03:04+00'
+  AND tm::timetz::time = time '02:03:04';
+
+SET TIME ZONE 'Asia/Shanghai';
+SELECT count(*) FROM cast_pairs
+WHERE ts::timestamptz = timestamptz '2024-01-02 02:03:04+08';
+SET TIME ZONE 'UTC';
+\pset format aligned
+
+DROP FOREIGN TABLE cast_pairs;
+SELECT duckdb_execute('duckdb_test', 'DROP TABLE cast_pairs');
+RESET TIME ZONE;
+
 -- Regression: text values that look like DuckDB lists must be returned
 -- unchanged on read; only array-typed columns get the [..] -> {..} rewrite.
 -- (A DuckDB list round-trips as a PG array; a VARCHAR that merely starts
