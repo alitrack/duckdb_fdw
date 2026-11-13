@@ -290,6 +290,15 @@ duckdb_bind_parameter_value(duckdb_prepared_statement stmt, idx_t param_idx, Oid
 					elog(ERROR, "duckdb_fdw: bind date failed at parameter %zu", (size_t) param_idx);
 				return;
 			}
+		case TIMEOID:
+			{
+				duckdb_time time;
+
+				time.micros = DatumGetTimeADT(val);
+				if (duckdb_bind_time(stmt, param_idx, time) == DuckDBError)
+					elog(ERROR, "duckdb_fdw: bind time failed at parameter %zu", (size_t) param_idx);
+				return;
+			}
 		case TIMESTAMPOID:
 			{
 				duckdb_timestamp ts = duckdb_timestamp_from_pg(DatumGetTimestamp(val));

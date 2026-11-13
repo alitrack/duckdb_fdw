@@ -151,6 +151,22 @@ SELECT i FROM division_inputs WHERE i / (j - j) > 0;
 WITH scanned AS MATERIALIZED (SELECT i, j FROM division_inputs)
 SELECT i FROM scanned WHERE i / (j - j) > 0;
 
+-- Constants retain their PostgreSQL types in remote expressions.
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT min(j + 1), count(*) FROM division_inputs;
+SELECT min(j + 1), count(*) FROM division_inputs;
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT CASE WHEN i > 1 THEN true ELSE false END AS b, count(*)
+FROM division_inputs GROUP BY 1;
+WITH grouped AS MATERIALIZED (
+    SELECT CASE WHEN i > 1 THEN true ELSE false END AS b,
+           CASE WHEN i > 1 THEN date '2024-01-02' ELSE NULL::date END AS d,
+           CASE WHEN i > 1 THEN time '12:34:56' ELSE time '01:02:03' END AS tm,
+           count(*)
+    FROM division_inputs GROUP BY 1, 2, 3
+)
+SELECT * FROM grouped ORDER BY b;
+
 DROP FOREIGN TABLE division_inputs;
 SELECT duckdb_execute('duckdb_test', 'DROP TABLE division_inputs');
 
@@ -290,6 +306,26 @@ SELECT i, encode(b, 'hex'), b IS NULL FROM blob_domains ORDER BY i;
 DROP FOREIGN TABLE blob_domains;
 DROP DOMAIN nested_binary_value, binary_value;
 DROP FOREIGN TABLE blob_rows;
+
+-- Native temporal parameters retain their types, including all-NULL results.
+SET plan_cache_mode = force_generic_plan;
+PREPARE temporal_case(time, time, timestamp, timestamp,
+                      timestamptz, timestamptz) AS
+WITH grouped AS MATERIALIZED (
+    SELECT CASE WHEN i = 1 THEN $1 ELSE $2 END AS tm,
+           CASE WHEN i = 1 THEN $3 ELSE $4 END AS ts,
+           CASE WHEN i = 1 THEN $5 ELSE $6 END AS tz,
+           count(*)
+    FROM test_types GROUP BY 1, 2, 3
+)
+SELECT * FROM grouped ORDER BY 1;
+EXECUTE temporal_case(
+    '01:02:03.123456', '23:59:59.999999', NULL, NULL, NULL, NULL);
+EXECUTE temporal_case(
+    NULL, '23:59:59.999999', NULL, NULL, NULL, NULL);
+EXECUTE temporal_case(NULL, NULL, NULL, NULL, NULL, NULL);
+DEALLOCATE temporal_case;
+RESET plan_cache_mode;
 
 -- Date conversions
 SET datestyle = 'ISO, YMD';
