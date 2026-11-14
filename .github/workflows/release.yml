@@ -11,7 +11,7 @@
 #      release for the tag (softprops/action-gh-release).  The source
 #      zip/tar.gz assets are added by GitHub automatically.
 #
-# macOS builds use macos-14 (arm64): libduckdb.dylib from DuckDB's release
+# macOS builds use macos-15 (arm64): libduckdb.dylib from DuckDB's release
 # assets is a *universal* binary, so it runs on both Apple Silicon and
 # Intel, while the compiled duckdb_fdw extension module itself is
 # arm64 (built against the arm64 PG headers of the runner).
@@ -40,7 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         pg_version: [15, 16, 17, 18]
-        os: [ubuntu-22.04, ubuntu-24.04-arm, macos-14]
+        os: [ubuntu-22.04, ubuntu-24.04-arm, macos-15]
 
     steps:
     - uses: actions/checkout@v4
