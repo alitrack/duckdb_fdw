@@ -234,7 +234,39 @@ duckdb_build_relation_reference(const char *table_name)
 	}
 
 	if (strchr(table_name, '.') != NULL || strchr(table_name, '"') != NULL)
+	{
+		/*
+		 * Dotted chains and quoted names must not smuggle extra SQL
+		 * (e.g. "a.b, c" would splice an extra FROM item).  Accept only
+		 * when every dot-separated segment is a valid identifier or a
+		 * balanced double-quoted segment; anything else is rejected.
+		 */
+		char	   *copy = pstrdup(table_name);
+		char	   *saveptr = NULL;
+		char	   *token = duckdb_fdw_next_token(copy, ".", &saveptr);
+		bool		ok = true;
+
+		while (token)
+		{
+			char	   *trimmed = duckdb_fdw_trim_token(token);
+
+			if (!duckdb_fdw_is_valid_identifier(trimmed) &&
+				!duckdb_fdw_is_valid_quoted_identifier(trimmed))
+			{
+				ok = false;
+				break;
+			}
+			token = duckdb_fdw_next_token(NULL, ".", &saveptr);
+		}
+		pfree(copy);
+
+		if (!ok)
+			ereport(ERROR,
+					(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+					 errmsg("unsafe table option value: dotted/quoted relation "
+							"names must be simple identifiers")));
 		return pstrdup(table_name);
+	}
 
 	return duckdb_fdw_quote_identifier(table_name);
 }
@@ -918,6 +950,8 @@ duckdb_setup_write_mapping(DuckDBFdwExecState *festate, Oid relid,
 		char	   *sql = psprintf("DESCRIBE %s", relref);
 		duckdb_result res;
 
+		MemSet(&res, 0, sizeof(res));	/* destroy-on-zeros stays safe even
+										 * if the engine fails early */
 		if (duckdb_query_checked(festate->conn, sql, &res) == DuckDBError)
 		{
 			char	   *err = duckdb_fdw_result_error_text(&res);
@@ -2850,6 +2884,9 @@ duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTab
 
 			{
 				duckdb_result res;
+
+				MemSet(&res, 0, sizeof(res));	/* destroy-on-zeros stays safe even
+												 * if the engine fails early */
 				if (duckdb_query_checked(festate->conn, sql.data, &res) == DuckDBError)
 				{
 					/* error text is owned by the result: copy before destroy */

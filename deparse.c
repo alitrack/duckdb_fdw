@@ -257,9 +257,8 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 					appendStringInfoChar(buf, '.');
 				first = false;
 
-			if (duckdb_fdw_is_valid_identifier(trimmed))
-				appendStringInfo(buf, "%s", duckdb_quote_identifier(trimmed, QUOTE));
-			else if (duckdb_fdw_is_safe_sql_fragment(trimmed))
+			if (duckdb_fdw_is_valid_identifier(trimmed) ||
+				duckdb_fdw_is_valid_quoted_identifier(trimmed))
 				appendStringInfo(buf, "%s", duckdb_quote_identifier(trimmed, QUOTE));
 			else
 				ereport(ERROR,
@@ -273,6 +272,16 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 			}
 		else
 		{
+			/*
+			 * Quoted (but not dotted) name: pass through only when it is
+			 * one balanced quoted identifier; anything else could splice
+			 * extra SQL.
+			 */
+			if (!duckdb_fdw_is_valid_quoted_identifier(relname))
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+						 errmsg("unsafe table option value: quoted relation "
+								"name is not a simple identifier")));
 			appendStringInfo(buf, "%s", relname);
 		}
 	}

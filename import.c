@@ -80,6 +80,9 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
     ForeignServer *server = GetForeignServer(serverOid);
     duckdb_connection conn = duckdb_get_connection(server, false);
     duckdb_result res;
+
+    MemSet(&res, 0, sizeof(res));    /* destroy-on-zeros stays safe even if
+                                      * the engine fails early */
     StringInfoData query;
     bool is_file = false;
     bool is_quack = false;

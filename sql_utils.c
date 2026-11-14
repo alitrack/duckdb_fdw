@@ -79,6 +79,35 @@ duckdb_fdw_is_valid_identifier(const char *input)
 }
 
 /*
+ * duckdb_fdw_is_valid_quoted_identifier
+ *		True when `input` is one balanced double-quoted segment:
+ *		starts and ends with '"', no embedded '"' (an escaped quote
+ *		inside a dotted segment cannot be distinguished from a segment
+ *		boundary by the naive dot splitter, so reject rather than
+ *		mis-parse), and a non-empty body.  Used with the dot splitter
+ *		so a `table` option like '"my table".t1' passes but
+ *		'a.b, c' or 'a."x) y' is rejected.
+ */
+bool
+duckdb_fdw_is_valid_quoted_identifier(const char *input)
+{
+	const char *p;
+
+	if (!input || input[0] != '"' || input[strlen(input) - 1] != '"')
+		return false;
+	if (strlen(input) < 3)		/* just "" — empty body */
+		return false;
+	for (p = input + 1; *p; p++)
+	{
+		if (*p == '"')
+			return false;		/* embedded quote: ambiguous, reject */
+		if (*p == ';' || *p == '(' || *p == ')')
+			return false;
+	}
+	return true;
+}
+
+/*
  * duckdb_fdw_is_table_function_call
  *		True when `input` is a *balanced* table-function call: a valid
  *		identifier followed by '(' and at least one string-literal argument,
