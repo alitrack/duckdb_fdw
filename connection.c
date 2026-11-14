@@ -252,9 +252,10 @@ duckdb_query_interruptible(duckdb_connection conn, const char *sql,
 {
 	duckdb_extracted_statements extracted = NULL;
 	duckdb_prepared_statement	stmt = NULL;
-	duckdb_state					status = DuckDBError;
-	idx_t							nstmts,
-									i;
+	duckdb_state				status = DuckDBError;
+	bool						wrote_res = false;
+	idx_t						nstmts,
+								i;
 	const char					*extract_err;
 
 	nstmts = duckdb_extract_statements(conn, sql, &extracted);
@@ -283,7 +284,7 @@ duckdb_query_interruptible(duckdb_connection conn, const char *sql,
 				duckdb_destroy_prepare(&stmt);
 				duckdb_destroy_extracted(&extracted);
 				/* release a result written by an earlier statement, if any */
-				if (i > 0)
+				if (wrote_res)
 				{
 					duckdb_destroy_result(res);
 					MemSet(res, 0, sizeof(*res));
@@ -307,6 +308,9 @@ duckdb_query_interruptible(duckdb_connection conn, const char *sql,
 
 			status = duckdb_execute_checked(conn, stmt, res);
 			duckdb_destroy_prepare(&stmt);
+			wrote_res = true;	/* res may now hold engine-owned memory,
+								 * even when status == DuckDBError
+								 * (duckdb.h mandates destroy-on-failure) */
 			if (status == DuckDBError)
 				break;
 		}
@@ -316,11 +320,16 @@ duckdb_query_interruptible(duckdb_connection conn, const char *sql,
 		/*
 		 * A longjmp from execute_checked (pending-stage ereport or a
 		 * cancellation) skips the cleanup below; release the extracted
-		 * statement set and a partially written result here.
+		 * statement set and a partially written result here.  wrote_res
+		 * (not i > 0) decides because execute_checked returns with res
+		 * written even on DuckDBError (duckdb.h mandates destroy-on-failure);
+		 * a cancellation can only longjmp out of the poll loop BEFORE
+		 * duckdb_execute_pending runs, so wrote_res==false implies res was
+		 * never touched.
 		 */
 		duckdb_destroy_prepare(&stmt);
 		duckdb_destroy_extracted(&extracted);
-		if (i > 0)
+		if (wrote_res)
 		{
 			duckdb_destroy_result(res);
 			MemSet(res, 0, sizeof(*res));
@@ -363,9 +372,9 @@ duckdb_query_checked(duckdb_connection conn, const char *sql, duckdb_result *res
  *     tasks abort promptly, destroy the pending result, and re-throw.
  *   - NO_TASKS_AVAILABLE is treated inside the loop (not by falling
  *     through to an uninterruptible duckdb_execute_pending): the engine
- *     reports it immediately for statements whose tasks complete inside
- *     the first slice, and we then still execute pending under the same
- *     interrupt discipline via a final bounded pass.
+ *     reports it whenever its workers hold every task.  We keep polling
+ *     (with a 1ms sleep) until the state changes, so every phase of the
+ *     statement stays interruptible.
  *   - every ereport path destroys the pending result first; the caller's
  *     res is NOT written until success, so it never needs cleanup here.
  */
@@ -605,6 +614,9 @@ duckdb_connection_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 		else
 		{
 			duckdb_result res;
+
+			MemSet(&res, 0, sizeof(res));	/* destroy-on-zeros stays safe even
+											 * if the engine fails early */
 			duckdb_state status = duckdb_query(entry->conn, "ROLLBACK", &res);
 
 			if (status == DuckDBError)

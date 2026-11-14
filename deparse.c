@@ -259,8 +259,9 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 
 			if (duckdb_fdw_is_valid_identifier(trimmed))
 				appendStringInfo(buf, "%s", duckdb_quote_identifier(trimmed, QUOTE));
-			else if (duckdb_fdw_is_safe_sql_fragment(trimmed))
-				appendStringInfo(buf, "%s", duckdb_quote_identifier(trimmed, QUOTE));
+			else if (duckdb_fdw_is_valid_quoted_identifier(trimmed))
+				appendStringInfo(buf, "%s", trimmed);	/* already quoted:
+															 * do not re-quote */
 			else
 				ereport(ERROR,
 						(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
@@ -273,7 +274,51 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 			}
 		else
 		{
-			appendStringInfo(buf, "%s", relname);
+			/*
+			 * Relname contains double quotes.  A dotted chain with quoted
+			 * segments (mys."my t") is validated per segment; a single
+			 * quoted name ("my t") must be one balanced identifier.
+			 * Anything else could splice extra SQL.
+			 */
+			if (strchr(relname, '.') != NULL)
+			{
+				char	   *token;
+				char	   *saveptr = NULL;
+				bool		first = true;
+
+				relname_copy = pstrdup(relname);
+				token = duckdb_fdw_next_token(relname_copy, ".", &saveptr);
+				while (token)
+				{
+					char	   *trimmed = duckdb_fdw_trim_token(token);
+
+					if (!first)
+						appendStringInfoChar(buf, '.');
+					first = false;
+
+					if (duckdb_fdw_is_valid_identifier(trimmed))
+						appendStringInfo(buf, "%s", duckdb_quote_identifier(trimmed, QUOTE));
+					else if (duckdb_fdw_is_valid_quoted_identifier(trimmed))
+						appendStringInfo(buf, "%s", trimmed);	/* already quoted */
+					else
+						ereport(ERROR,
+								(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+								 errmsg("relation name contains unsafe characters: \"%s\"",
+										trimmed)));
+
+					token = duckdb_fdw_next_token(NULL, ".", &saveptr);
+				}
+				pfree(relname_copy);
+			}
+			else
+			{
+				if (!duckdb_fdw_is_valid_quoted_identifier(relname))
+					ereport(ERROR,
+							(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+							 errmsg("unsafe table option value: quoted relation "
+									"name is not a simple identifier")));
+				appendStringInfo(buf, "%s", relname);
+			}
 		}
 	}
 	else
