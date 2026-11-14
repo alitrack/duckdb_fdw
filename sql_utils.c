@@ -154,22 +154,40 @@ duckdb_fdw_is_table_function_call(const char *input)
 		if (*p == ';' || *p == '"')
 			return false;
 		if ((*p == '/' && p[1] == '*') || (*p == '-' && p[1] == '-'))
-			return false;		/* comment outside string literal */
+			return false;	/* comment outside string literal */
 		/*
 		 * A comma at paren depth 0 would terminate the table function and
 		 * smuggle an extra FROM item ("read_parquet('x'), (SELECT ...)").
 		 * Commas inside the call's parentheses are legitimate arguments.
 		 */
-		if (*p == ',' && depth == 0)
+	if (*p == ',' && depth == 0)
+		return false;
+	if (*p == '(')
+	{
+		depth++;
+		p++;
+	}
+	else if (*p == ')')
+	{
+		depth--;
+		if (depth < 0)
 			return false;
-		if (*p == '(')
-			depth++;
-		else if (*p == ')')
+		if (depth == 0)
 		{
-			depth--;
-			if (depth < 0)
-				return false;
+			/*
+			 * The call's closing parenthesis must be the LAST token:
+			 * anything but whitespace after it (UNION / JOIN / CROSS
+			 * JOIN / aliases / ', (SELECT ...)') smuggles a second
+			 * FROM item or set operation into the spliced fragment.
+			 */
+			for (p++; *p; p++)
+				if (*p != ' ' && *p != '	' && *p != '\n' && *p != '\r')
+					return false;
+			return !in_str;
 		}
+		p++;
+	}
+	else
 		p++;
 	}
 	return !in_str && depth == 0;

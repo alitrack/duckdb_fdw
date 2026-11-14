@@ -208,14 +208,17 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 		appendStringInfo(buf, "read_parquet(%s)", rel_lit);
 		pfree(rel_lit);
 	}
-    else if (strstr(relname, "read_parquet") != NULL || strstr(relname, "read_csv") != NULL)
+    else if ((strstr(relname, "read_parquet") != NULL || strstr(relname, "read_csv") != NULL)
+             && strchr(relname, '(') != NULL)
     {
         /*
          * Already a function call, pass as is — but only after the same
          * structural validation duckdb_build_relation_reference() applies:
          * is_safe_sql_fragment() alone permits commas, so without this a
          * table option like "read_parquet('x'), (SELECT ...)" would splice
-         * an extra FROM item into the remote query.
+         * an extra FROM item into the remote query.  A bare relation name
+         * that merely contains the substring (no '(') is handled by the
+         * relation-name branches below.
          */
         if (!duckdb_fdw_is_table_function_call(relname))
             ereport(ERROR,
@@ -510,6 +513,9 @@ duckdb_is_supported_cast(Oid source, Oid target)
 	 * sources can be cast to mapped types; unbounded numeric targets stay local.
 	 */
 	source = getBaseType(source);
+	if (target == NUMERICOID)
+		return false;			/* no typmod here: a bare DECIMAL cast
+									 * rounds to scale 3 (wrong values) */
 	if (duckdb_pg_cast_type(target) == NULL ||
 		(duckdb_pg_cast_type(source) == NULL && source != NUMERICOID))
 		return false;
@@ -2903,6 +2909,17 @@ duckdb_deparse_const(Const *node, deparse_expr_cxt *context, int showtype)
 	else if (node->constisnull && node->consttype == BYTEAOID)
 		cast_type = "BLOB";
 
+	/*
+	 * Unbounded DECIMAL in DuckDB defaults to scale 3 — casting a numeric
+	 * literal through it silently rounds 0.123456 to 0.123 and returns
+	 * wrong rows from pushed-down predicates.  A bare literal already binds
+	 * to DuckDB as an exact DECIMAL(p,s), so only the NULL constant (where
+	 * the cast exists purely to disambiguate the type) gets one.
+	 */
+	if (node->consttype == NUMERICOID && cast_type != NULL &&
+		!node->constisnull)
+		cast_type = NULL;
+
 	if (cast_type != NULL)
 		appendStringInfoString(buf, "CAST(");
 
@@ -3629,6 +3646,28 @@ duckdb_print_remote_param(int paramindex, Oid paramtype, int32 paramtypmod,
 {
 	StringInfo	buf = context->buf;
 	const char *cast_type = duckdb_pg_cast_type(paramtype);
+
+	/*
+	 * Unbounded DECIMAL defaults to scale 3 in DuckDB and would round
+	 * bound values (0.123456 -> 0.123, wrong rows).  When the parameter
+	 * carries a typmod, cast with its exact scale; when it does not, bind
+	 * it bare and let DuckDB coerce the value string in context (which is
+	 * exact, unlike a scale-3 DECIMAL cast).
+	 */
+	if (paramtype == NUMERICOID && cast_type != NULL)
+	{
+		if (paramtypmod >= 0)
+		{
+			int			scale = (paramtypmod - VARHDRSZ) & 0xffff;
+
+			if (scale <= 38)
+				cast_type = psprintf("DECIMAL(38,%d)", scale);
+			else
+				cast_type = NULL;
+		}
+		else
+			cast_type = NULL;
+	}
 
 	if (cast_type != NULL)
 		appendStringInfo(buf, "CAST(? AS %s)", cast_type);

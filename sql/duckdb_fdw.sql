@@ -188,8 +188,7 @@ EXPLAIN (VERBOSE, COSTS OFF)
 SELECT sum(r + i) FROM expression_results;
 SELECT sum(r + i) AS implicit_cast_sum FROM expression_results;
 
--- Unbounded numeric casts now push down with explicit DECIMAL casts;
--- DuckDB's DECIMAL result keeps a trailing .000 scale suffix.
+-- Unbounded numeric casts execute locally: both spellings return 16777217.
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT sum(i::numeric) FROM expression_results;
 SELECT sum(i::numeric) AS numeric_cast,

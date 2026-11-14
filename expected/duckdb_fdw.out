@@ -283,11 +283,11 @@ CREATE FOREIGN TABLE numeric_division(i numeric)
 SERVER duckdb_test OPTIONS (table 'division_inputs');
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT sum(i / 2) FROM numeric_division WHERE i = 5;
-                                                           QUERY PLAN                                                            
----------------------------------------------------------------------------------------------------------------------------------
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
  Foreign Scan
    Output: (sum((i / '2'::numeric)))
-   Remote SQL: SELECT CAST(sum(("i" / CAST(2 AS DECIMAL))) AS VARCHAR) FROM "division_inputs" WHERE (("i" = CAST(5 AS DECIMAL)))
+   Remote SQL: SELECT CAST(sum(("i" / 2)) AS VARCHAR) FROM "division_inputs" WHERE (("i" = 5))
 (3 rows)
 
 SELECT sum(i / 2) AS numeric_div FROM numeric_division WHERE i = 5;
@@ -404,22 +404,23 @@ SELECT sum(r + i) AS implicit_cast_sum FROM expression_results;
           16777217
 (1 row)
 
--- Unbounded numeric casts push down with explicit DECIMAL casts; DuckDB's
--- DECIMAL result keeps a trailing .000 scale suffix.
+-- Unbounded numeric casts execute locally: both spellings return 16777217.
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT sum(i::numeric) FROM expression_results;
-                                        QUERY PLAN                                         
--------------------------------------------------------------------------------------------
- Foreign Scan
-   Output: (sum((i)::numeric))
-   Remote SQL: SELECT CAST(sum(CAST("i" AS DECIMAL)) AS VARCHAR) FROM "expression_results"
-(3 rows)
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Aggregate
+   Output: sum((i)::numeric)
+   ->  Foreign Scan on public.expression_results
+         Output: i, j, r
+         Remote SQL: SELECT "i" FROM "expression_results"
+(5 rows)
 
 SELECT sum(i::numeric) AS numeric_cast,
        sum(pg_catalog.numeric(i)) AS numeric_call FROM expression_results;
  numeric_cast | numeric_call 
 --------------+--------------
- 16777217.000 | 16777217.000
+     16777217 |     16777217
 (1 row)
 
 DROP FOREIGN TABLE expression_results;

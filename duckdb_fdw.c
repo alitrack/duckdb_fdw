@@ -153,13 +153,14 @@ bool duckdb_fdw_allow_unsupported_pg_duckdb_coexistence = false;
  * here, registered in _PG_init, consumed by the xact callback in
  * connection.c (extern there).
  *
- * Defaults to true: re-opening the database, re-running INSTALL/LOAD of
- * httpfs/iceberg/motherduck (network round-trips) and re-CREATE SECRET on
- * every transaction was orders of magnitude more expensive than holding
- * the connection.  ABORT still always tears the cache down (remote
- * ROLLBACK first), so a failed remote state is never reused.
+ * Defaults to false (per-transaction lifetime).  Flipping this default is a
+ * user-visible, file-locking behavior change and is deliberately kept out of
+ * this fix batch: with the cache retention on, every session that touches a
+ * file-backed database holds its write lock for the session's lifetime, and
+ * a query cancelled without an abort can pin its state across transactions.
+ * It will be reconsidered in a separate change with release notes and tests.
  */
-bool duckdb_fdw_keep_connection = true;
+bool duckdb_fdw_keep_connection = false;
 
 static void duckdb_cleanup_scan(void *arg);
 static void duckdb_cleanup_modify(void *arg);
@@ -207,9 +208,13 @@ duckdb_build_relation_reference(const char *table_name)
 		return expr;
 	}
 
-	if (strstr(table_name, "read_parquet") != NULL ||
-		strstr(table_name, "read_csv") != NULL ||
-		strchr(table_name, '(') != NULL)
+	/*
+	 * Table-function pass-through applies only when the option actually
+	 * spells a call — a bare name containing "read_parquet" as a plain
+	 * substring (e.g. a table called read_parquet_data) has no '(' and
+	 * must fall through to normal relation-name handling.
+	 */
+	if (strchr(table_name, '(') != NULL)
 	{
 		/*
 		 * Table-function pass-through.  The fragment is spliced verbatim
@@ -3396,17 +3401,18 @@ _PG_init(void)
 	DefineCustomBoolVariable(
 		"duckdb_fdw.keep_connection",
 		"Retain cached DuckDB connections across transaction commits.",
-		"On (default): after COMMIT the cached connections are kept "
-		"(the remote transaction has been settled and in_xact cleared), so the "
-		"next transaction reuses them instead of re-opening the database, "
-		"re-installing extensions and re-ATTACHing catalogs; on ABORT the "
-		"cache is still torn down after the remote ROLLBACK.  Trade-off: a "
-		"retained connection to a file-backed DuckDB database keeps the file "
-		"write lock held across transactions, so disable it per session where "
-		"exclusive lock holding matters more than reuse — the gain from "
-		"keeping it is largest in quack/remote mode.",
+		"Off (default): the connection cache is torn down at the end of every "
+		"transaction.  When enabled, after COMMIT the cached connections are "
+		"kept (the remote transaction has been settled and in_xact cleared), "
+		"so the next transaction reuses them instead of re-opening the "
+		"database, re-installing extensions and re-ATTACHing catalogs; on "
+		"ABORT the cache is still torn down after the remote ROLLBACK.  "
+		"Trade-off: a retained connection to a file-backed DuckDB database "
+		"keeps the file write lock held across transactions, so enable it "
+		"only where reuse matters more than exclusive lock holding — the "
+		"gain is largest in quack/remote mode.",
 		&duckdb_fdw_keep_connection,
-		true,
+		false,
 		PGC_USERSET,
 		0,
 		NULL,
