@@ -210,7 +210,17 @@ duckdb_deparse_relation(StringInfo buf, Relation rel)
 	}
     else if (strstr(relname, "read_parquet") != NULL || strstr(relname, "read_csv") != NULL)
     {
-        /* Already a function call, pass as is */
+        /*
+         * Already a function call, pass as is — but only after the same
+         * structural validation duckdb_build_relation_reference() applies:
+         * is_safe_sql_fragment() alone permits commas, so without this a
+         * table option like "read_parquet('x'), (SELECT ...)" would splice
+         * an extra FROM item into the remote query.
+         */
+        if (!duckdb_fdw_is_table_function_call(relname))
+            ereport(ERROR,
+                    (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+                     errmsg("unsafe table option value: not a well-formed table function call")));
         appendStringInfo(buf, "%s", relname);
     }
     else if (duckdb_fdw_is_table_function_call(relname))
@@ -2974,7 +2984,16 @@ duckdb_deparse_const(Const *node, deparse_expr_cxt *context, int showtype)
 			}
 
 			if (convert_timestamp_tounixepoch)
-				appendStringInfo(buf, "strftime('%%s', '%s')", extval);
+			{
+				/*
+				 * epoch() of a TIMESTAMP literal.  strftime('%s', ...)
+				 * is gone from current DuckDB ("Unrecognized format
+				 * specifier %s") and its (format, data) argument order
+				 * is ambiguous between overloads; epoch() is stable
+				 * and returns a DOUBLE that compares against INT.
+				 */
+				appendStringInfo(buf, "epoch(CAST('%s' AS TIMESTAMP))", extval);
+			}
 			else
 				duckdb_deparse_string_literal(buf, extval);
 

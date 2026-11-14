@@ -39,8 +39,14 @@ duckdb_map_type_name(const char *duck_type)
     if (strcmp(duck_type, "FLOAT") == 0) return "float4";
     if (strcmp(duck_type, "DOUBLE") == 0) return "float8";
     if (strcmp(duck_type, "DATE") == 0) return "date";
+    if (strcmp(duck_type, "TIME") == 0) return "time";
+    if (strcmp(duck_type, "TIME WITH TIME ZONE") == 0) return "timetz";
     if (strcmp(duck_type, "TIMESTAMP") == 0) return "timestamp";
-    if (strcmp(duck_type, "TIMESTAMPTZ") == 0) return "timestamptz";
+    /* DuckDB DESCRIBE reports the canonical name 'TIMESTAMP WITH TIME
+     * ZONE', never the 'TIMESTAMPTZ' alias — match both anyway. */
+    if (strcmp(duck_type, "TIMESTAMP WITH TIME ZONE") == 0 ||
+        strcmp(duck_type, "TIMESTAMPTZ") == 0) return "timestamptz";
+    if (strcmp(duck_type, "INTERVAL") == 0) return "interval";
     if (strcmp(duck_type, "JSON") == 0) return "jsonb";
     if (strcmp(duck_type, "VARCHAR") == 0) return "text";
 
@@ -58,6 +64,13 @@ duckdb_map_type_name(const char *duck_type)
         return ret;
     }
 
+    /* Unmapped types (TIMESTAMP_S/MS/NS, U*TINT, ENUM/STRUCT/MAP/UNION,
+     * ...) degrade to text.  Tell the user instead of silently changing
+     * the column semantics. */
+    ereport(NOTICE,
+            (errcode(ERRCODE_WARNING),
+             errmsg("duckdb_fdw: DuckDB type \"%s\" has no native mapping, foreign table column created as text",
+                    duck_type)));
     return "text";
 }
 
@@ -121,7 +134,7 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 	        appendStringInfo(&query, "DESCRIBE SELECT * FROM read_parquet(%s)", remote_schema_lit);
 	        if (duckdb_query_checked(conn, query.data, &res) == DuckDBError)
 	        {
-	            const char *errtxt = pstrdup(duckdb_result_error(&res));
+	            const char *errtxt = duckdb_fdw_result_error_text(&res);
 	            duckdb_destroy_result(&res);
 	            elog(ERROR, "DuckDB: %s", errtxt);
 	        }
@@ -278,7 +291,7 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 
         if (duckdb_query_checked(conn, query.data, &tables_res) == DuckDBError)
         {
-            const char *errtxt = pstrdup(duckdb_result_error(&tables_res));
+            const char *errtxt = duckdb_fdw_result_error_text(&tables_res);
             duckdb_destroy_result(&tables_res);
             elog(ERROR, "DuckDB: %s", errtxt);
         }
@@ -339,7 +352,7 @@ duckdb_import_foreign_schema(ImportForeignSchemaStmt *stmt, Oid serverOid)
                  * Previously the failure was swallowed silently, leaking the
                  * C-heap duckdb_result.
                  */
-                const char *errtxt = pstrdup(duckdb_result_error(&col_res));
+                const char *errtxt = duckdb_fdw_result_error_text(&col_res);
                 duckdb_destroy_result(&col_res);
                 ereport(ERROR,
                         (errcode(ERRCODE_FDW_ERROR),

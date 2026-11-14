@@ -152,8 +152,14 @@ bool duckdb_fdw_allow_unsupported_pg_duckdb_coexistence = false;
  * ROLLBACK first), so a half-open remote state is never handed on.  Defined
  * here, registered in _PG_init, consumed by the xact callback in
  * connection.c (extern there).
+ *
+ * Defaults to true: re-opening the database, re-running INSTALL/LOAD of
+ * httpfs/iceberg/motherduck (network round-trips) and re-CREATE SECRET on
+ * every transaction was orders of magnitude more expensive than holding
+ * the connection.  ABORT still always tears the cache down (remote
+ * ROLLBACK first), so a failed remote state is never reused.
  */
-bool duckdb_fdw_keep_connection = false;
+bool duckdb_fdw_keep_connection = true;
 
 static void duckdb_cleanup_scan(void *arg);
 static void duckdb_cleanup_modify(void *arg);
@@ -205,6 +211,20 @@ duckdb_build_relation_reference(const char *table_name)
 		strstr(table_name, "read_csv") != NULL ||
 		strchr(table_name, '(') != NULL)
 	{
+		/*
+		 * Table-function pass-through.  The fragment is spliced verbatim
+		 * into a FROM clause, so it must be a *balanced* table-function
+		 * call (identifier + '(' + quoted args, no separators).  Merely
+		 * passing is_safe_sql_fragment() above is not enough: it allows
+		 * commas, quotes and parens, so "read_parquet('x'), (SELECT ...)"
+		 * would smuggle an extra FROM item (e.g. duckdb_secrets()) into
+		 * the query.  Reject anything that is not a well-formed single
+		 * call.
+		 */
+		if (!duckdb_fdw_is_table_function_call(table_name))
+			ereport(ERROR,
+					(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+					 errmsg("unsafe table option value: not a well-formed table function call")));
 		return pstrdup(table_name);
 	}
 
@@ -391,11 +411,10 @@ duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, Foreig
 		if (duckdb_execute_checked(festate->conn, festate->prepared_stmt, &festate->res) == DuckDBError)
 		{
 			/*
-			 * On failure query_executed is still false, so EndForeignScan
-			 * will skip destroying the result.  The error text is owned by
-			 * the result: copy it, destroy the result, then elog (longjmp).
+			 * The error text is owned by the result: copy it, destroy the
+			 * result, then elog (longjmp).
 			 */
-			const char *errtxt = pstrdup(duckdb_result_error(&festate->res));
+			const char *errtxt = duckdb_fdw_result_error_text(&festate->res);
 			duckdb_destroy_result(&festate->res);
 			elog(ERROR, "duckdb_fdw: execute prepared failed: %s", errtxt);
 		}
@@ -404,7 +423,7 @@ duckdb_execute_query(DuckDBFdwExecState *festate, ForeignScanState *node, Foreig
 	{
 		if (duckdb_query_checked(festate->conn, festate->query, &festate->res) == DuckDBError)
 		{
-			const char *errtxt = pstrdup(duckdb_result_error(&festate->res));
+			const char *errtxt = duckdb_fdw_result_error_text(&festate->res);
 			duckdb_destroy_result(&festate->res);
 			elog(ERROR, "duckdb_fdw: query failed: %s", errtxt);
 		}
@@ -896,8 +915,7 @@ duckdb_setup_write_mapping(DuckDBFdwExecState *festate, Oid relid,
 
 		if (duckdb_query_checked(festate->conn, sql, &res) == DuckDBError)
 		{
-			char	   *err = pstrdup(duckdb_result_error(&res) ?
-									   duckdb_result_error(&res) : "unknown error");
+			char	   *err = duckdb_fdw_result_error_text(&res);
 
 			char	   *relref_copy = pstrdup(relref);
 			duckdb_destroy_result(&res);
@@ -916,11 +934,15 @@ duckdb_setup_write_mapping(DuckDBFdwExecState *festate, Oid relid,
 												   Max(1, festate->nduckcols));
 		for (int j = 0; j < festate->nduckcols; j++)
 		{
-			const char *cn = duckdb_value_varchar(&res, 0, (uint64_t) j);
-			const char *ct = duckdb_value_varchar(&res, 1, (uint64_t) j);
+			char *cn = duckdb_value_varchar(&res, 0, (uint64_t) j);
+			char *ct = duckdb_value_varchar(&res, 1, (uint64_t) j);
 
 			festate->duckcolnames[j] = pstrdup(cn ? cn : "");
 			festate->duckcoltypes[j] = pstrdup(ct ? ct : "");
+			/* duckdb_value_varchar allocates on the DuckDB (C) heap; the
+			 * pstrdup copies above are the PG-side owners. */
+			duckdb_free(cn);
+			duckdb_free(ct);
 		}
 		duckdb_destroy_result(&res);
 
@@ -1973,6 +1995,7 @@ static const DuckDBPgType duckdb_pg_types[] = {
 	{INT8OID, "BIGINT"},
 	{FLOAT4OID, "FLOAT"},
 	{FLOAT8OID, "DOUBLE"},
+	{NUMERICOID, "DECIMAL"},
 	{DATEOID, "DATE"},
 	{TIMEOID, "TIME"},
 	{TIMETZOID, "TIMETZ"},
@@ -2825,7 +2848,7 @@ duckdbExecForeignInsert(EState *executor, ResultRelInfo *resultRelInfo, TupleTab
 				if (duckdb_query_checked(festate->conn, sql.data, &res) == DuckDBError)
 				{
 					/* error text is owned by the result: copy before destroy */
-					const char *errtxt = pstrdup(duckdb_result_error(&res));
+					const char *errtxt = duckdb_fdw_result_error_text(&res);
 					duckdb_destroy_result(&res);
 					elog(ERROR, "DuckDB insert failed: %s", errtxt);
 				}
@@ -3373,18 +3396,17 @@ _PG_init(void)
 	DefineCustomBoolVariable(
 		"duckdb_fdw.keep_connection",
 		"Retain cached DuckDB connections across transaction commits.",
-		"Off (default): the connection cache is torn down at every top-level "
-		"transaction end.  On: after COMMIT the cached connections are kept "
+		"On (default): after COMMIT the cached connections are kept "
 		"(the remote transaction has been settled and in_xact cleared), so the "
 		"next transaction reuses them instead of re-opening the database, "
 		"re-installing extensions and re-ATTACHing catalogs; on ABORT the "
 		"cache is still torn down after the remote ROLLBACK.  Trade-off: a "
 		"retained connection to a file-backed DuckDB database keeps the file "
-		"write lock held across transactions, so enable it per session where "
-		"reuse wins over exclusive lock holding — the gain is largest in "
-		"quack/remote mode.",
+		"write lock held across transactions, so disable it per session where "
+		"exclusive lock holding matters more than reuse — the gain from "
+		"keeping it is largest in quack/remote mode.",
 		&duckdb_fdw_keep_connection,
-		false,
+		true,
 		PGC_USERSET,
 		0,
 		NULL,

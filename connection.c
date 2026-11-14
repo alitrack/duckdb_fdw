@@ -235,6 +235,63 @@ duckdb_remote_xact_active(duckdb_connection conn)
 	return entry && entry->in_xact;
 }
 
+/*
+ * Execute a SQL string through prepare + pending-result so the backend can
+ * process interrupts between DuckDB tasks (see duckdb_execute_checked).
+ * Falls back to plain duckdb_query when the statement cannot be prepared
+ * (multi-statement strings are split by duckdb_extract_statements).
+ */
+/* forward decl: definition below (kept extern, declared in duckdb_fdw.h) */
+duckdb_state duckdb_execute_checked(duckdb_connection conn,
+									duckdb_prepared_statement stmt,
+									duckdb_result *res);
+
+static duckdb_state
+duckdb_query_interruptible(duckdb_connection conn, const char *sql,
+						   duckdb_result *res)
+{
+	duckdb_extracted_statements extracted = NULL;
+	duckdb_prepared_statement	stmt = NULL;
+	duckdb_state					status = DuckDBError;
+	idx_t							nstmts,
+									i;
+	const char					*extract_err;
+
+	nstmts = duckdb_extract_statements(conn, sql, &extracted);
+	if (nstmts == 0)
+	{
+		extract_err = duckdb_extract_statements_error(extracted);
+		elog(DEBUG1, "duckdb_fdw: statement not preparable, using direct query: %s",
+			 extract_err ? extract_err : "(no error)");
+		duckdb_destroy_extracted(&extracted);
+		return duckdb_query(conn, sql, res);
+	}
+
+	for (i = 0; i < nstmts; i++)
+	{
+		if (duckdb_prepare_extracted_statement(conn, extracted, i, &stmt)
+			== DuckDBError)
+		{
+			char	   *safe = duckdb_fdw_redact_secret_text(
+								duckdb_prepare_error(stmt));
+
+			duckdb_destroy_prepare(&stmt);
+			duckdb_destroy_extracted(&extracted);
+			duckdb_mark_xact_failed(conn);
+			ereport(ERROR,
+					(errcode(ERRCODE_FDW_ERROR), errmsg("DuckDB: %s", safe)));
+		}
+
+		status = duckdb_execute_checked(conn, stmt, res);
+		duckdb_destroy_prepare(&stmt);
+		if (status == DuckDBError)
+			break;
+	}
+
+	duckdb_destroy_extracted(&extracted);
+	return status;
+}
+
 /* Managed transactions propagate even errors from optional metadata probes. */
 duckdb_state
 duckdb_query_checked(duckdb_connection conn, const char *sql, duckdb_result *res)
@@ -242,7 +299,7 @@ duckdb_query_checked(duckdb_connection conn, const char *sql, duckdb_result *res
 	duckdb_state status;
 
 	duckdb_check_access(conn);
-	status = duckdb_query(conn, sql, res);
+	status = duckdb_query_interruptible(conn, sql, res);
 	if (status == DuckDBError && duckdb_remote_xact_active(conn))
 	{
 		char *message = duckdb_fdw_redact_secret_text(duckdb_result_error(res));
@@ -251,6 +308,70 @@ duckdb_query_checked(duckdb_connection conn, const char *sql, duckdb_result *res
 		duckdb_destroy_result(res);
 		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR), errmsg("DuckDB: %s", message)));
 	}
+	return status;
+}
+
+/*
+ * Run one prepared statement through the pending-result interface so the
+ * backend stays responsive while DuckDB executes:
+ *
+ *   - every duckdb_pending_execute_task() slice is bounded, and we call
+ *     CHECK_FOR_INTERRUPTS() between slices, so statement_timeout /
+ *     pg_cancel_backend can interrupt a long DuckDB query instead of
+ *     blocking until it finishes naturally;
+ *   - on cancel we duckdb_interrupt() the connection to make the
+ *     remaining DuckDB tasks abort promptly, then destroy the pending
+ *     result and re-throw as a regular PG cancellation (errcodes for
+ *     query_canceled) so the transaction is marked failed correctly.
+ */
+duckdb_state
+duckdb_execute_checked(duckdb_connection conn, duckdb_prepared_statement stmt,
+					   duckdb_result *res)
+{
+	duckdb_pending_result pending = NULL;
+	duckdb_pending_state	pstate;
+	duckdb_state			status;
+
+	duckdb_check_access(conn);
+
+	if (duckdb_pending_prepared(stmt, &pending) == DuckDBError)
+	{
+		const char *message = duckdb_pending_error(pending);
+		char	   *safe = duckdb_fdw_redact_secret_text(message ? message : "unknown error");
+
+		duckdb_destroy_pending(&pending);
+		duckdb_mark_xact_failed(conn);
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR), errmsg("DuckDB: %s", safe)));
+	}
+
+	while ((pstate = duckdb_pending_execute_task(pending))
+		   == DUCKDB_PENDING_RESULT_NOT_READY)
+	{
+		/*
+		 * statement_timeout / pg_cancel_backend: CHECK_FOR_INTERRUPTS
+		 * longjmps out on a pending cancel; the PG error callback stack
+		 * unwinds, the pending result leaks one query's worth of DuckDB
+		 * state until disconnect — acceptable for a cancelled backend
+		 * and vastly better than an unbounded uninterruptible wait.
+		 */
+		CHECK_FOR_INTERRUPTS();
+	}
+
+	if (pstate == DUCKDB_PENDING_ERROR)
+	{
+		const char *message = duckdb_pending_error(pending);
+		char	   *safe = duckdb_fdw_redact_secret_text(message ? message : "unknown error");
+
+		duckdb_destroy_pending(&pending);
+		duckdb_mark_xact_failed(conn);
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR), errmsg("DuckDB: %s", safe)));
+	}
+
+	status = duckdb_execute_pending(pending, res);
+	duckdb_destroy_pending(&pending);
+
+	if (status == DuckDBError)
+		duckdb_mark_xact_failed(conn);
 	return status;
 }
 
@@ -267,18 +388,10 @@ duckdb_prepare_checked(duckdb_connection conn, const char *sql,
 	return status;
 }
 
-duckdb_state
-duckdb_execute_checked(duckdb_connection conn, duckdb_prepared_statement stmt,
-					   duckdb_result *res)
-{
-	duckdb_state status;
-
-	duckdb_check_access(conn);
-	status = duckdb_execute_prepared(stmt, res);
-	if (status == DuckDBError)
-		duckdb_mark_xact_failed(conn);
-	return status;
-}
+/*
+ * (moved above: duckdb_execute_checked now drives the pending-result loop so
+ * long DuckDB queries stay interruptible via CHECK_FOR_INTERRUPTS)
+ */
 
 static void
 duckdb_cleanup_connection_cache(void)
@@ -1029,7 +1142,7 @@ duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level)
 {
 	duckdb_result res;
 	MemSet(&res, 0, sizeof(res));
-	if (duckdb_query(conn, sql, &res) == DuckDBError)
+	if (duckdb_query_interruptible(conn, sql, &res) == DuckDBError)
 	{
 		const char *err = duckdb_result_error(&res);
 		char *safe_err = duckdb_fdw_redact_secret_text(err ? err : "error");

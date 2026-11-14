@@ -1,5 +1,6 @@
 #include "postgres.h"
 #include "duckdb_fdw.h"
+#include "duckdb.h"
 #include "commands/defrem.h"
 
 #include <ctype.h>
@@ -154,6 +155,13 @@ duckdb_fdw_is_table_function_call(const char *input)
 			return false;
 		if ((*p == '/' && p[1] == '*') || (*p == '-' && p[1] == '-'))
 			return false;		/* comment outside string literal */
+		/*
+		 * A comma at paren depth 0 would terminate the table function and
+		 * smuggle an extra FROM item ("read_parquet('x'), (SELECT ...)").
+		 * Commas inside the call's parentheses are legitimate arguments.
+		 */
+		if (*p == ',' && depth == 0)
+			return false;
 		if (*p == '(')
 			depth++;
 		else if (*p == ')')
@@ -270,6 +278,26 @@ duckdb_fdw_next_token(char *str, const char *delim, char **saveptr)
 }
 
 /*
+ * Copy a DuckDB result error for safe use in ereport/elog: NULL-safe and
+ * redacted.  The returned string is palloc'd (PG memory context); call
+ * duckdb_destroy_result() yourself afterwards.
+ */
+char *
+duckdb_fdw_result_error_text(duckdb_result *res)
+{
+	const char *raw;
+
+	if (res == NULL)
+		return pstrdup("unknown error");
+
+	raw = duckdb_result_error(res);
+	if (raw == NULL || raw[0] == '\0')
+		return pstrdup("unknown error");
+
+	return duckdb_fdw_redact_secret_text(raw);
+}
+
+/*
  * Returns true when the foreign server was created with
  * force_readonly = true. Server-level option, checked directly from the
  * catalog (no foreign table involved).
@@ -300,25 +328,28 @@ duckdb_fdw_server_is_readonly(ForeignServer *server)
  * side of refusal: a statement that is hard to classify is treated as a
  * write.
  *
- * Allowed first keywords: SELECT, FROM, WITH, VALUES, DESCRIBE, DESC,
- * SHOW, EXPLAIN, PRAGMA (query pragmas only; see below).
+ * Allowed first keywords: SELECT, FROM, VALUES, DESCRIBE, DESC, SHOW.
+ *
+ * WITH and EXPLAIN are deliberately NOT allowed: DuckDB accepts
+ * CTE-prefixed DML/DDL ("WITH x AS (...) INSERT INTO t ...") and EXPLAIN
+ * ANALYZE executes the statement it decorates (verified on DuckDB 2.x:
+ * "EXPLAIN ANALYZE DELETE FROM t" really deletes rows).  Both were silent
+ * bypasses of force_readonly for :memory: databases.
  */
 bool
 duckdb_fdw_sql_is_readonly(const char *sql)
 {
 	static const struct
 	{
-		const char *keyword;
+		const char	*keyword;
 		int			len;
 	} readonly_kw[] = {
 		{"SELECT", 6},
 		{"FROM", 4},
-		{"WITH", 4},
 		{"VALUES", 6},
 		{"DESCRIBE", 8},
 		{"DESC", 4},
 		{"SHOW", 4},
-		{"EXPLAIN", 7},
 	};
 	const char *p;
 	size_t		i;
