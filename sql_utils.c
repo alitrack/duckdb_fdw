@@ -92,17 +92,22 @@ bool
 duckdb_fdw_is_valid_quoted_identifier(const char *input)
 {
 	const char *p;
+	size_t		len;
 
-	if (!input || input[0] != '"' || input[strlen(input) - 1] != '"')
+	if (!input || input[0] != '"')
 		return false;
-	if (strlen(input) < 3)		/* just "" — empty body */
+	len = strlen(input);
+	if (len < 3 || input[len - 1] != '"')	/* need "" around a non-empty body */
 		return false;
-	for (p = input + 1; *p; p++)
+
+	/* scan the INTERIOR only — the closing quote is excluded */
+	for (p = input + 1; p < input + len - 1; p++)
 	{
 		if (*p == '"')
 			return false;		/* embedded quote: ambiguous, reject */
-		if (*p == ';' || *p == '(' || *p == ')')
-			return false;
+		if (*p == ';' || *p == '(' || *p == ')' || *p == ',')
+			return false;		/* statement/argument separators never
+								 * belong inside a single identifier */
 	}
 	return true;
 }

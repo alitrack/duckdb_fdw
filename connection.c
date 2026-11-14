@@ -321,10 +321,11 @@ duckdb_query_interruptible(duckdb_connection conn, const char *sql,
 		 * A longjmp from execute_checked (pending-stage ereport or a
 		 * cancellation) skips the cleanup below; release the extracted
 		 * statement set and a partially written result here.  wrote_res
-		 * (not i > 0) decides: execute_checked can write *res during its
-		 * internal duckdb_execute_pending before a cancel/error longjmps,
-		 * including for statement 0 (e.g. a single-statement scan query
-		 * cancelled mid-flight).
+		 * (not i > 0) decides because execute_checked returns with res
+		 * written even on DuckDBError (duckdb.h mandates destroy-on-failure);
+		 * a cancellation can only longjmp out of the poll loop BEFORE
+		 * duckdb_execute_pending runs, so wrote_res==false implies res was
+		 * never touched.
 		 */
 		duckdb_destroy_prepare(&stmt);
 		duckdb_destroy_extracted(&extracted);
