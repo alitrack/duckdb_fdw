@@ -137,6 +137,7 @@ extern bool duckdb_fdw_is_valid_identifier(const char *input);
 extern bool duckdb_fdw_is_table_function_call(const char *input);
 extern bool duckdb_fdw_is_safe_sql_fragment(const char *input);
 extern char *duckdb_fdw_redact_secret_text(const char *input);
+extern char *duckdb_fdw_result_error_text(duckdb_result *res);
 extern char *duckdb_fdw_trim_token(char *token);
 extern char *duckdb_fdw_next_token(char *str, const char *delim, char **saveptr);
 extern bool duckdb_fdw_server_is_readonly(ForeignServer *server);
