@@ -736,6 +736,9 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         bool need_httpfs = (s3_access_key != NULL);
         bool need_iceberg = false;
         bool need_motherduck = (motherduck_token != NULL);
+        bool loaded_httpfs = false;
+        bool loaded_iceberg = false;
+        bool loaded_motherduck = false;
 
         if (attach_catalogs)
         {
@@ -748,9 +751,21 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
         }
 
         /* Use ERROR level to ensure user sees why extension loading fails */
-        if (need_httpfs) duckdb_do_sql_command(conn, "INSTALL 'httpfs'; LOAD 'httpfs';", ERROR);
-        if (need_iceberg) duckdb_do_sql_command(conn, "INSTALL 'iceberg'; LOAD 'iceberg';", ERROR);
-        if (need_motherduck) duckdb_do_sql_command(conn, "INSTALL 'motherduck'; LOAD 'motherduck';", ERROR);
+        if (need_httpfs)
+        {
+            duckdb_do_sql_command(conn, "INSTALL 'httpfs'; LOAD 'httpfs';", ERROR);
+            loaded_httpfs = true;
+        }
+        if (need_iceberg)
+        {
+            duckdb_do_sql_command(conn, "INSTALL 'iceberg'; LOAD 'iceberg';", ERROR);
+            loaded_iceberg = true;
+        }
+        if (need_motherduck)
+        {
+            duckdb_do_sql_command(conn, "INSTALL 'motherduck'; LOAD 'motherduck';", ERROR);
+            loaded_motherduck = true;
+        }
 
 	        /* Also load any manually specified extensions */
 		        if (extensions)
@@ -766,7 +781,9 @@ duckdb_setup_secrets_and_extensions(duckdb_connection conn, ForeignServer *serve
 		                    token = duckdb_fdw_next_token(NULL, ",", &saveptr);
 		                    continue;
 		                }
-		                if (strcmp(trimmed, "httpfs") != 0 && strcmp(trimmed, "iceberg") != 0)
+		                if (!((loaded_httpfs && strcmp(trimmed, "httpfs") == 0) ||
+		                      (loaded_iceberg && strcmp(trimmed, "iceberg") == 0) ||
+		                      (loaded_motherduck && strcmp(trimmed, "motherduck") == 0)))
 		                    install_extension_if_valid(conn, trimmed);
 		                token = duckdb_fdw_next_token(NULL, ",", &saveptr);
 		            }
@@ -1133,13 +1150,38 @@ duckdb_get_connection(ForeignServer *server, bool truncatable)
         {
             duckdb_config cfg = NULL;
             char *err = NULL;
+            duckdb_state cfg_state;
 
-            if (duckdb_create_config(&cfg) != DuckDBSuccess ||
-                duckdb_set_config(cfg, "access_mode", "READ_ONLY") != DuckDBSuccess)
+            cfg_state = duckdb_create_config(&cfg);
+            if (cfg_state == DuckDBSuccess)
+                cfg_state = duckdb_set_config(cfg, "access_mode", "READ_ONLY");
+            if (cfg_state != DuckDBSuccess)
+            {
+                if (cfg != NULL)
+                    duckdb_destroy_config(&cfg);
                 elog(ERROR, "duckdb_fdw: failed to create read-only DuckDB configuration");
+            }
+
             if (duckdb_open_ext(dbpath, &entry->db, cfg, &err) == DuckDBError)
+            {
+                /*
+                 * ereport() longjmps, so copy the engine-owned message into
+                 * the current memory context before releasing it.
+                 */
+                char *safe_err = err ? pstrdup(err) : NULL;
+
+                duckdb_destroy_config(&cfg);
+                if (err != NULL)
+                    duckdb_free(err);
                 elog(ERROR, "failed to open DuckDB in read-only mode: %s",
-                     err ? err : "unknown error");
+                     safe_err ? safe_err : "unknown error");
+            }
+
+            /* The config is only needed for duckdb_open_ext(); the error
+             * buffer may also be set on success, so release both here. */
+            duckdb_destroy_config(&cfg);
+            if (err != NULL)
+                duckdb_free(err);
         }
         else if (duckdb_open(dbpath, &entry->db) == DuckDBError)
             elog(ERROR, "failed to open DuckDB");
@@ -1237,11 +1279,19 @@ duckdb_do_sql_command(duckdb_connection conn, const char *sql, int level)
 	PG_CATCH();
 	{
 		ErrorData  *edata = CopyErrorData();
+		char	   *safe_message;
+
+		/*
+		 * The caught error may quote a statement that carries a secret;
+		 * apply the same redaction used on the non-longjmp paths.
+		 */
+		safe_message = duckdb_fdw_redact_secret_text(
+							edata->message ? edata->message : "error");
+		FreeErrorData(edata);
 
 		FlushErrorState();
 		duckdb_destroy_result(&res);
-		elog(level, "DuckDB: %s", edata->message ? edata->message : "error");
-		FreeErrorData(edata);
+		elog(level, "DuckDB: %s", safe_message);
 		return;
 	}
 	PG_END_TRY();

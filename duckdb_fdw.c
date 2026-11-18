@@ -3289,43 +3289,65 @@ Datum duckdb_execute(PG_FUNCTION_ARGS) {
 
 PG_FUNCTION_INFO_V1(duckdb_create_s3_secret);
 Datum duckdb_create_s3_secret(PG_FUNCTION_ARGS) {
-    char *servername = NameStr(*PG_GETARG_NAME(0));
-    char *secret_name = text_to_cstring(PG_GETARG_TEXT_PP(1));
-    char *key_id = text_to_cstring(PG_GETARG_TEXT_PP(2));
-    char *secret = text_to_cstring(PG_GETARG_TEXT_PP(3));
-    char *region = PG_ARGISNULL(4) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(4));
+    char *servername;
+    char *secret_name;
+    char *key_id;
+    char *secret;
+    char *region;
 
-	    duckdb_connection conn = duckdb_get_connection(GetForeignServerByName(servername, false), false);
+    /*
+     * This SQL function cannot be declared STRICT: region is optional
+     * (DEFAULT NULL), so STRICT would skip the entire call whenever the
+     * caller omits it and no secret would be created.  Validate the four
+     * required arguments explicitly instead.
+     */
+    if (PG_ARGISNULL(0) || PG_ARGISNULL(1) ||
+        PG_ARGISNULL(2) || PG_ARGISNULL(3))
+        ereport(ERROR,
+                (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+                 errmsg("server, secret_name, key_id and secret must not be NULL")));
 
-	    StringInfoData sql;
-		char *secret_id;
-		char *key_lit;
-		char *secret_lit;
-	    initStringInfo(&sql);
-		if (!duckdb_fdw_is_valid_identifier(secret_name))
-			ereport(ERROR,
-					(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
-					 errmsg("invalid secret name \"%s\"", secret_name)));
-		secret_id = duckdb_fdw_quote_identifier(secret_name);
-		key_lit = duckdb_fdw_quote_literal(key_id);
-		secret_lit = duckdb_fdw_quote_literal(secret);
-	    appendStringInfo(&sql, "CREATE OR REPLACE SECRET %s ( TYPE S3, KEY_ID %s, SECRET %s",
-	                     secret_id, key_lit, secret_lit);
-	    if (region)
-		{
-			char *region_lit = duckdb_fdw_quote_literal(region);
-	        appendStringInfo(&sql, ", REGION %s", region_lit);
-			pfree(region_lit);
-		}
-	    appendStringInfoString(&sql, " );");
+    servername = NameStr(*PG_GETARG_NAME(0));
+    secret_name = text_to_cstring(PG_GETARG_TEXT_PP(1));
+    key_id = text_to_cstring(PG_GETARG_TEXT_PP(2));
+    secret = text_to_cstring(PG_GETARG_TEXT_PP(3));
+    region = PG_ARGISNULL(4) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(4));
 
-	    duckdb_do_sql_command(conn, sql.data, ERROR);
-		pfree(secret_id);
-		pfree(key_lit);
-		pfree(secret_lit);
-		pfree(sql.data);
+    duckdb_connection conn = duckdb_get_connection(
+                                GetForeignServerByName(servername, false), false);
 
-	    PG_RETURN_VOID();
+    StringInfoData sql;
+    char *secret_id;
+    char *key_lit;
+    char *secret_lit;
+
+    initStringInfo(&sql);
+    if (!duckdb_fdw_is_valid_identifier(secret_name))
+        ereport(ERROR,
+                (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+                 errmsg("invalid secret name \"%s\"", secret_name)));
+
+    secret_id = duckdb_fdw_quote_identifier(secret_name);
+    key_lit = duckdb_fdw_quote_literal(key_id);
+    secret_lit = duckdb_fdw_quote_literal(secret);
+    appendStringInfo(&sql, "CREATE OR REPLACE SECRET %s ( TYPE S3, KEY_ID %s, SECRET %s",
+                     secret_id, key_lit, secret_lit);
+    if (region)
+    {
+        char *region_lit = duckdb_fdw_quote_literal(region);
+
+        appendStringInfo(&sql, ", REGION %s", region_lit);
+        pfree(region_lit);
+    }
+    appendStringInfoString(&sql, " );");
+
+    duckdb_do_sql_command(conn, sql.data, ERROR);
+    pfree(secret_id);
+    pfree(key_lit);
+    pfree(secret_lit);
+    pfree(sql.data);
+
+    PG_RETURN_VOID();
 }
 
 int

@@ -80,6 +80,71 @@ duckdb_runtime_scan_loaded_object(struct dl_phdr_info *info, size_t size, void *
 	return 0;
 }
 
+/*
+ * Same-backend coexistence is only supported when pg_duckdb links the very
+ * same DuckDB version as this FDW (author-confirmed precondition).  Ask the
+ * loaded peer object for its duckdb_library_version() symbol and compare it
+ * with ours.  dlopen() on an already-loaded object only bumps its refcount.
+ *
+ * A missing symbol means the peer statically embedded DuckDB without
+ * exporting the C API entry point; in that case we cannot prove anything and
+ * deliberately fall back to PEER_LOADED_NEED_VALIDATION (strict policy still
+ * applies).
+ */
+typedef enum DuckDBPeerVersionCheck
+{
+	DUCKDB_PEER_VERSION_UNKNOWN,
+	DUCKDB_PEER_VERSION_MATCH,
+	DUCKDB_PEER_VERSION_MISMATCH
+} DuckDBPeerVersionCheck;
+
+static DuckDBPeerVersionCheck
+duckdb_runtime_compare_peer_version(const DuckDBRuntimeFingerprint *fingerprint)
+{
+	const char *own_version = duckdb_library_version();
+	const char *paths[2];
+	int			i;
+	bool		saw_version = false;
+
+	if (own_version == NULL || own_version[0] == '\0')
+		return DUCKDB_PEER_VERSION_UNKNOWN;
+
+	paths[0] = fingerprint->peer_module_path;	/* pg_duckdb.so */
+	paths[1] = fingerprint->peer_runtime_path;	/* possible second libduckdb */
+
+	for (i = 0; i < 2; i++)
+	{
+		void	   *handle;
+		const char *(*peer_version_fn) (void);
+		const char *peer_version;
+
+		if (paths[i] == NULL || paths[i][0] == '\0')
+			continue;
+
+		handle = dlopen(paths[i], RTLD_NOW | RTLD_LOCAL);
+		if (handle == NULL)
+			continue;
+
+		peer_version_fn = (const char *(*)(void)) dlsym(handle, "duckdb_library_version");
+		if (peer_version_fn != NULL)
+		{
+			peer_version = peer_version_fn();
+			if (peer_version != NULL && peer_version[0] != '\0')
+			{
+				saw_version = true;
+				if (strcmp(own_version, peer_version) != 0)
+				{
+					dlclose(handle);
+					return DUCKDB_PEER_VERSION_MISMATCH;
+				}
+			}
+		}
+		dlclose(handle);
+	}
+
+	return saw_version ? DUCKDB_PEER_VERSION_MATCH : DUCKDB_PEER_VERSION_UNKNOWN;
+}
+
 static DuckDBRuntimeCompatibilityStatus
 duckdb_runtime_guard_status_linux(void)
 {
@@ -100,7 +165,16 @@ duckdb_runtime_guard_status_linux(void)
 	dl_iterate_phdr(duckdb_runtime_scan_loaded_object, &context);
 
 	if (context.pg_duckdb_module_count > 0)
+	{
+		DuckDBPeerVersionCheck version_check;
+
+		version_check = duckdb_runtime_compare_peer_version(&context.fingerprint);
+		if (version_check == DUCKDB_PEER_VERSION_MISMATCH)
+			return DUCKDB_RUNTIME_INCOMPATIBLE;
+		if (version_check == DUCKDB_PEER_VERSION_MATCH)
+			return DUCKDB_RUNTIME_COMPATIBLE_PROVEN;
 		return DUCKDB_RUNTIME_PEER_LOADED_NEED_VALIDATION;
+	}
 
 	if (context.fingerprint.module_path == NULL)
 		return DUCKDB_RUNTIME_COMPATIBLE_UNPROVEN;
@@ -183,7 +257,7 @@ duckdb_runtime_guard_error(DuckDBRuntimeCompatibilityStatus status)
 			detail = "duckdb_fdw could not prove that the active DuckDB runtime is safe for supported execution.";
 			break;
 		case DUCKDB_RUNTIME_INCOMPATIBLE:
-			detail = "duckdb_fdw detected an incompatible DuckDB runtime combination in the current backend.";
+			detail = "pg_duckdb is loaded in this backend but links a different DuckDB version; same-version linkage is the supported coexistence precondition.";
 			break;
 		default:
 			detail = "duckdb_fdw rejected the active DuckDB runtime combination.";

@@ -1143,15 +1143,31 @@ duckdb_foreign_expr_walker(Node *node,
 			break;
 		case T_CaseExpr:
 			{
+				CaseExpr   *caseexpr = (CaseExpr *) node;
 				ListCell   *lc;
 
-				/* Recurse to condition subexpressions. */
-				foreach(lc, ((CaseExpr *) node)->args)
+				/*
+				 * The deparser emits the simple-CASE operand, every WHEN
+				 * clause and the ELSE result.  All three must be checked,
+				 * otherwise a local-only expression hidden in the operand
+				 * or in ELSE would be pushed down and evaluated wrongly.
+				 */
+				if (caseexpr->arg != NULL &&
+					!duckdb_foreign_expr_walker((Node *) caseexpr->arg,
+												glob_cxt, &inner_cxt))
+					return false;
+
+				foreach(lc, caseexpr->args)
 				{
 					if (!duckdb_foreign_expr_walker((Node *) lfirst(lc),
 													glob_cxt, &inner_cxt))
 						return false;
 				}
+
+				if (caseexpr->defresult != NULL &&
+					!duckdb_foreign_expr_walker((Node *) caseexpr->defresult,
+												glob_cxt, &inner_cxt))
+					return false;
 			}
 			break;
 		case T_CaseWhen:
@@ -2006,7 +2022,7 @@ duckdb_deparse_insert(StringInfo buf, PlannerInfo *root,
 	{
 		foreach(lc, targetAttrs)
 		{
-			int			attnum = linitial_int(targetAttrs);
+			int			attnum = lfirst_int(lc);
 			Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
 
 			if (!attr->attgenerated)
