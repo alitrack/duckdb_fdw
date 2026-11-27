@@ -105,7 +105,7 @@ cmake --build build --config Release
 The installer copies `duckdb_fdw.dll` into `<PostgresBase>\lib`, `duckdb_fdw.control` and `duckdb_fdw--*.sql` into `<PostgresBase>\share\extension`, and `duckdb.dll` into `<PostgresBase>\bin` so that the PostgreSQL server can load it.
 
 ### Requirements
-* PostgreSQL 13 - 18 (headers required)
+* PostgreSQL 13 - 19 (headers required)
 * DuckDB library (`libduckdb.so`, `libduckdb.dylib` or `duckdb.dll`) with repo-pinned bootstrap default `1.5.1`
 * Tested with libduckdb 1.5.x **and 2.0.x** (FDW asserts version range `1.5.x / 2.0.x` on first connection and fails startup with a clear error outside it)
 * GCC or Clang with C11/C++11 support (MSVC + CMake >= 3.20 on Windows)
