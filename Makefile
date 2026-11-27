@@ -16,7 +16,7 @@ EXTENSION = duckdb_fdw
 DATA = $(wildcard duckdb_fdw--*.sql)
 
 # 默认回归测试
-REGRESS = duckdb_fdw duckdb_transaction
+REGRESS = duckdb_fdw duckdb_transaction duckdb_upgrade
 
 # 操作系统检测
 ifeq '$(findstring ;,$(PATH))' ';'
