@@ -1,0 +1,64 @@
+-- Verify that the supported upgrade chain can start at the historical 1.0.0 version.
+CREATE EXTENSION duckdb_fdw VERSION '1.0.0';
+SELECT extversion FROM pg_extension WHERE extname = 'duckdb_fdw';
+ extversion 
+------------
+ 1.0.0
+(1 row)
+
+ALTER EXTENSION duckdb_fdw UPDATE TO '1.1.2';
+SELECT extversion FROM pg_extension WHERE extname = 'duckdb_fdw';
+ extversion 
+------------
+ 1.1.2
+(1 row)
+
+ALTER EXTENSION duckdb_fdw UPDATE TO '1.1.3';
+SELECT extversion FROM pg_extension WHERE extname = 'duckdb_fdw';
+ extversion 
+------------
+ 1.1.3
+(1 row)
+
+ALTER EXTENSION duckdb_fdw UPDATE TO '1.3.2';
+SELECT extversion FROM pg_extension WHERE extname = 'duckdb_fdw';
+ extversion 
+------------
+ 1.3.2
+(1 row)
+
+ALTER EXTENSION duckdb_fdw UPDATE TO '1.4.1';
+SELECT extversion FROM pg_extension WHERE extname = 'duckdb_fdw';
+ extversion 
+------------
+ 1.4.1
+(1 row)
+
+ALTER EXTENSION duckdb_fdw UPDATE TO '2.0.0';
+SELECT extversion FROM pg_extension WHERE extname = 'duckdb_fdw';
+ extversion 
+------------
+ 2.0.0
+(1 row)
+
+ALTER EXTENSION duckdb_fdw UPDATE TO '2.0.1';
+SELECT extversion FROM pg_extension WHERE extname = 'duckdb_fdw';
+ extversion 
+------------
+ 2.0.1
+(1 row)
+
+ALTER EXTENSION duckdb_fdw UPDATE TO '2.0.2';
+SELECT extversion FROM pg_extension WHERE extname = 'duckdb_fdw';
+ extversion 
+------------
+ 2.0.2
+(1 row)
+
+SELECT duckdb_fdw_version() IS NOT NULL AS has_version;
+ has_version 
+-------------
+ t
+(1 row)
+
+DROP EXTENSION duckdb_fdw;
